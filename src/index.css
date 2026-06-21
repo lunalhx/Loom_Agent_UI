@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --background: 210 9% 6%;
+    --foreground: 40 18% 91%;
+    --muted: 210 7% 11%;
+    --muted-foreground: 215 9% 57%;
+    --popover: 210 8% 8%;
+    --popover-foreground: 40 18% 91%;
+    --border: 210 8% 17%;
+    --input: 210 8% 18%;
+    --primary: 36 92% 54%;
+    --primary-foreground: 30 14% 7%;
+    --secondary: 198 18% 18%;
+    --secondary-foreground: 40 18% 91%;
+    --accent: 36 92% 54%;
+    --accent-foreground: 30 14% 7%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --ring: 36 92% 54%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    margin: 0;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.28);
+  }
+
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border: 3px solid hsl(var(--background));
+    border-radius: 999px;
+  }
+}
+
+@layer components {
+  .panel-edge {
+    @apply border-border/80 bg-[#101214] shadow-insetline;
+  }
+
+  .mono-label {
+    @apply font-mono text-[11px] uppercase tracking-normal text-muted-foreground;
+  }
+
+  .focus-ring {
+    @apply outline-none ring-offset-0 focus-visible:ring-2 focus-visible:ring-ring/70;
+  }
+}
