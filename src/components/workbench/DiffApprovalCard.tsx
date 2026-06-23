@@ -1,10 +1,8 @@
-import { useMemo, useState } from "react";
-import ReactDiffViewer from "react-diff-viewer-continued";
-import { Check, TimerReset, X } from "lucide-react";
+import { Check, FilePenLine, TimerReset, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { tryStringify } from "@/lib/utils";
+import { basename, isWriteTool } from "@/lib/utils";
 import { useAgentStore, type ApprovalState } from "@/store/agentStore";
+import { CodeDiffPanel } from "./CodeDiffPanel";
 
 function secondsUntil(value?: string) {
   if (!value) return undefined;
@@ -12,39 +10,32 @@ function secondsUntil(value?: string) {
   return Number.isFinite(seconds) ? Math.max(seconds, 0) : undefined;
 }
 
+function stringInputValue(input: Record<string, unknown> | undefined, key: string) {
+  const value = input?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
 export function DiffApprovalCard({ approval }: { approval: ApprovalState }) {
-  const [reason, setReason] = useState("");
   const decide = useAgentStore((state) => state.decide);
   const event = approval.event;
   const seconds = secondsUntil(event.expiresAt);
   const diff = event.diff;
   const disabled = approval.status === "approving" || approval.status === "rejecting";
-
-  const diffView = useMemo(() => {
-    if (!diff) return null;
-    if (diff.format === "OLD_NEW") {
-      return (
-        <ReactDiffViewer
-          oldValue={diff.oldText || ""}
-          newValue={diff.newText || ""}
-          splitView
-          useDarkTheme
-        />
-      );
-    }
-    return (
-      <pre className="max-h-80 overflow-auto rounded border border-border bg-[#090b0d] p-3 font-mono text-xs text-muted-foreground">
-        {diff.unifiedDiff}
-      </pre>
-    );
-  }, [diff]);
+  const writeApproval = isWriteTool(event.tool);
+  const filePath = diff?.path || stringInputValue(event.input, "path");
+  const targetLabel = writeApproval ? basename(filePath) : event.tool;
+  const decisionText = writeApproval ? `即将写入 ${filePath || "目标文件"}, 是否批准?` : event.operationPreview || event.riskReason;
 
   return (
-    <div className="rounded border border-primary/35 bg-[#11100c] p-3 shadow-insetline">
-      <div className="mb-3 flex items-start justify-between gap-3">
+    <div className="space-y-3 rounded-[12px] border border-primary/25 bg-[#191a1c] p-3 shadow-insetline">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="font-mono text-sm text-primary">{event.tool}</div>
-          <div className="mt-1 text-sm text-muted-foreground">{event.riskReason}</div>
+          <div className="flex min-w-0 items-center gap-2 font-mono text-[13px] text-white/80">
+            <FilePenLine size={15} />
+            <span className="truncate">{targetLabel}</span>
+            <span className="rounded bg-sky-400/15 px-2 py-0.5 text-[10px] font-semibold text-sky-200">{event.tool}</span>
+          </div>
+          <div className="mt-1 line-clamp-2 text-[12.5px] text-white/45">{event.operationPreview || event.riskReason}</div>
         </div>
         <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
           <TimerReset size={13} />
@@ -52,34 +43,21 @@ export function DiffApprovalCard({ approval }: { approval: ApprovalState }) {
         </div>
       </div>
 
-      <div className="mb-3 rounded border border-border bg-[#0b0d0f] p-2 font-mono text-xs text-muted-foreground">
-        <div className="text-foreground">{event.operationPreview}</div>
-        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{tryStringify(event.input)}</pre>
-      </div>
+      {writeApproval ? <CodeDiffPanel diff={diff} path={filePath} /> : null}
 
-      {diffView ?? (
-        <div className="mb-3 rounded border border-dashed border-border bg-[#0b0d0f] p-3 font-mono text-xs text-muted-foreground">
-          后端未提供 diff 内容
+      <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-primary/35 bg-primary/10 px-3 py-2.5">
+        <span className="rounded bg-primary/20 px-2.5 py-1 text-xs font-semibold text-primary">高危</span>
+        <span className="min-w-[180px] flex-1 text-[13px] font-semibold text-white/72">{decisionText}</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="outline" size="sm" disabled={disabled} onClick={() => void decide(approval.approvalId, "REJECT")}>
+            <X size={14} />
+            拒绝
+          </Button>
+          <Button size="sm" disabled={disabled} onClick={() => void decide(approval.approvalId, "APPROVE")}>
+            <Check size={14} />
+            批准
+          </Button>
         </div>
-      )}
-
-      <Textarea
-        value={reason}
-        onChange={(event) => setReason(event.target.value)}
-        rows={2}
-        placeholder="reason"
-        className="mb-3 min-h-14 font-mono text-xs"
-      />
-
-      <div className="flex items-center justify-end gap-2">
-        <Button variant="outline" size="sm" disabled={disabled} onClick={() => void decide(approval.approvalId, "REJECT", reason)}>
-          <X size={14} />
-          Reject
-        </Button>
-        <Button size="sm" disabled={disabled} onClick={() => void decide(approval.approvalId, "APPROVE", reason)}>
-          <Check size={14} />
-          Approve
-        </Button>
       </div>
     </div>
   );

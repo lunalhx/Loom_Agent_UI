@@ -19,6 +19,7 @@ export class FeatureMissingError extends Error {
 }
 
 const API_BASE = "/api/v1";
+const DEFAULT_AGENT_MAX_STEPS = 30;
 
 async function parseApiResponse<T>(response: globalThis.Response): Promise<T> {
   if (response.status === 404 || response.status === 405) {
@@ -76,7 +77,7 @@ export type StreamHandle = {
 };
 
 export function openAgentAskStream(request: AgentAskRequest, handlers: StreamHandlers): StreamHandle {
-  return openPostSseStream(`${API_BASE}/agent/code/ask/stream`, { includeTrace: true, maxSteps: 6, ...request }, handlers);
+  return openPostSseStream(`${API_BASE}/agent/code/ask/stream`, { includeTrace: true, maxSteps: DEFAULT_AGENT_MAX_STEPS, ...request }, handlers);
 }
 
 export function openApprovalDecisionStream(

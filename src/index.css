@@ -72,4 +72,259 @@
   .focus-ring {
     @apply outline-none ring-offset-0 focus-visible:ring-2 focus-visible:ring-ring/70;
   }
+
+  .empty-loom svg {
+    display: block;
+  }
+
+  .empty-loom-warp {
+    stroke: rgba(243, 160, 76, 0.32);
+    stroke-width: 1.4;
+  }
+
+  .empty-loom-weft {
+    stroke: #f3a04c;
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+
+  .empty-loom-w1 {
+    animation: empty-loom-weave 2.8s ease-in-out infinite;
+  }
+
+  .empty-loom-w2 {
+    animation: empty-loom-weave 2.8s ease-in-out infinite 0.5s;
+  }
+
+  .empty-loom-w3 {
+    animation: empty-loom-weave 2.8s ease-in-out infinite 1s;
+  }
+
+  .empty-chip-icon {
+    display: flex;
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    font-size: 13px;
+  }
+
+  .empty-chip-blue {
+    background: rgba(88, 178, 220, 0.18);
+    color: #7ec4e0;
+  }
+
+  .empty-chip-green {
+    background: rgba(134, 208, 138, 0.16);
+    color: #86d08a;
+  }
+
+  .empty-chip-orange {
+    background: rgba(243, 160, 76, 0.18);
+    color: #f3a04c;
+  }
+
+  .loom-threading {
+    position: relative;
+    width: min(100%, 1080px);
+    height: 70px;
+    overflow: hidden;
+    border: 1px solid hsl(var(--border) / 0.8);
+    border-radius: 8px;
+    background:
+      linear-gradient(90deg, transparent, rgba(243, 160, 76, 0.34) 5%, rgba(243, 160, 76, 0.34) 95%, transparent) center 24px / 96% 2px no-repeat,
+      linear-gradient(90deg, transparent, rgba(243, 160, 76, 0.24) 6%, rgba(243, 160, 76, 0.24) 94%, transparent) center 34px / 88% 2px no-repeat,
+      linear-gradient(90deg, transparent, rgba(243, 160, 76, 0.18) 8%, rgba(243, 160, 76, 0.18) 92%, transparent) center 44px / 68% 2px no-repeat,
+      repeating-linear-gradient(90deg, transparent 0 9.5%, rgba(243, 160, 76, 0.12) 9.5% calc(9.5% + 2px), transparent calc(9.5% + 2px) 19%);
+  }
+
+  .loom-threading-label {
+    position: absolute;
+    left: 50%;
+    bottom: 10px;
+    transform: translateX(-50%);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
+    letter-spacing: 0;
+    color: #f3a04c;
+  }
+
+  .loom-threading span {
+    position: absolute;
+    display: block;
+  }
+
+  .loom-warp {
+    top: 4px;
+    bottom: 6px;
+    width: 2px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, transparent, #f3a04c, transparent);
+    opacity: 0.22;
+    animation: loom-warp-breathe 1.7s ease-in-out infinite;
+  }
+
+  .loom-warp-1 {
+    left: 6%;
+  }
+
+  .loom-warp-2 {
+    left: 31%;
+    animation-delay: 0.12s;
+  }
+
+  .loom-warp-3 {
+    left: 57%;
+    animation-delay: 0.24s;
+  }
+
+  .loom-warp-4 {
+    left: 86%;
+    animation-delay: 0.36s;
+  }
+
+  .loom-weft {
+    left: 4%;
+    right: 4%;
+    height: 2px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, rgba(243, 160, 76, 0.72), transparent);
+  }
+
+  .loom-weft-1 {
+    top: 24px;
+  }
+
+  .loom-weft-2 {
+    top: 34px;
+    opacity: 0.55;
+  }
+
+  .loom-shuttle {
+    top: 28px;
+    left: 3%;
+    width: 34px;
+    height: 7px;
+    border-radius: 999px;
+    background: #f3a04c;
+    box-shadow: 0 0 18px rgba(243, 160, 76, 0.8);
+    animation: loom-shuttle-pass 1.9s ease-in-out infinite alternate;
+  }
+
+  .mini-loom {
+    position: relative;
+    width: 48px;
+    height: 24px;
+    flex-shrink: 0;
+    overflow: hidden;
+    border-radius: 6px;
+    background:
+      linear-gradient(90deg, transparent, rgba(243, 160, 76, 0.45), transparent) center 8px / 88% 1.5px no-repeat,
+      linear-gradient(90deg, transparent, rgba(126, 196, 224, 0.32), transparent) center 15px / 74% 1.5px no-repeat;
+  }
+
+  .mini-loom span {
+    position: absolute;
+    display: block;
+  }
+
+  .mini-loom-warp {
+    top: 3px;
+    bottom: 3px;
+    width: 1.5px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, transparent, #f3a04c, transparent);
+    opacity: 0.42;
+    animation: loom-warp-breathe 1.5s ease-in-out infinite;
+  }
+
+  .mini-loom-warp-1 {
+    left: 10px;
+  }
+
+  .mini-loom-warp-2 {
+    left: 23px;
+    animation-delay: 0.12s;
+  }
+
+  .mini-loom-warp-3 {
+    left: 37px;
+    animation-delay: 0.24s;
+  }
+
+  .mini-loom-weft {
+    left: 5px;
+    right: 5px;
+    height: 1.5px;
+    border-radius: 999px;
+    background: rgba(243, 160, 76, 0.72);
+  }
+
+  .mini-loom-weft-1 {
+    top: 8px;
+  }
+
+  .mini-loom-weft-2 {
+    top: 15px;
+    opacity: 0.54;
+  }
+
+  .mini-loom-shuttle {
+    top: 11px;
+    left: 4px;
+    width: 14px;
+    height: 4px;
+    border-radius: 999px;
+    background: #f3a04c;
+    box-shadow: 0 0 10px rgba(243, 160, 76, 0.75);
+    animation: mini-loom-shuttle-pass 1.25s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes loom-warp-breathe {
+  0%,
+  100% {
+    opacity: 0.24;
+    transform: scaleY(0.88);
+  }
+
+  50% {
+    opacity: 0.82;
+    transform: scaleY(1);
+  }
+}
+
+@keyframes empty-loom-weave {
+  0%,
+  100% {
+    opacity: 0.3;
+    stroke-dasharray: 0 44 4 0;
+  }
+
+  50% {
+    opacity: 0.95;
+    stroke-dasharray: 44 0 0 0;
+  }
+}
+
+@keyframes loom-shuttle-pass {
+  from {
+    left: 3%;
+  }
+
+  to {
+    left: calc(97% - 34px);
+  }
+}
+
+@keyframes mini-loom-shuttle-pass {
+  from {
+    left: 4px;
+  }
+
+  to {
+    left: 30px;
+  }
 }

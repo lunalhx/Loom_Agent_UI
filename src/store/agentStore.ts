@@ -7,10 +7,12 @@ import {
   resolveWorkspace,
   type StreamHandle
 } from "@/lib/api";
-import { extractPaths, extractUnifiedDiff, formatTime } from "@/lib/utils";
+import { extractPaths, extractUnifiedDiff, formatTime, summarizeObservation } from "@/lib/utils";
 import type {
   AgentApprovalDecisionRequest,
   AgentAskRequest,
+  AgentPlanItemStatus,
+  AgentPlanView,
   AgentStreamEvent,
   AgentTool,
   AgentWorkspaceTreeNode,
@@ -24,6 +26,19 @@ export type Session = {
   createdAt: string;
   updatedAt: string;
   workspace?: string;
+  prompt?: string;
+  status?: RunStatus;
+  runId?: string;
+  requestId?: string;
+  conversationId?: string;
+  events?: TimelineEntry[];
+  steps?: StepState[];
+  plan?: PlanItem[];
+  trace?: TraceItem[];
+  approvals?: Record<string, ApprovalState>;
+  recentFiles?: string[];
+  answer?: string;
+  error?: string;
 };
 
 export type TimelineEntry = {
@@ -47,13 +62,15 @@ export type StepState = {
 export type PlanItem = {
   id: string;
   title: string;
-  status: StepState["status"];
+  status: "pending" | "doing" | "done" | "blocked" | "skipped";
+  detail?: string;
 };
 
 export type TraceItem = {
   id: string;
   label: string;
   detail?: string;
+  status?: string;
   time: string;
 };
 
@@ -97,7 +114,6 @@ type AgentState = {
   workspaceTree?: AgentWorkspaceTreeNode;
   workspaceTreeLoading: boolean;
   workspaceTreeError?: string;
-  maxSteps: number;
   prompt: string;
   events: TimelineEntry[];
   steps: StepState[];
@@ -116,7 +132,8 @@ type AgentState = {
   setSelectedModel: (model: string) => void;
   setPrompt: (prompt: string) => void;
   setWorkspace: (workspace: string) => void;
-  setMaxSteps: (maxSteps: number) => void;
+  newSession: () => void;
+  selectSession: (sessionId: string) => void;
   setSelectedLocalFile: (file?: File) => void;
   setSelectedLocalFolder: (files?: FileList | File[]) => void;
   resolveCurrentWorkspace: () => Promise<void>;
@@ -143,6 +160,45 @@ function writeSessions(sessions: Session[]) {
   localStorage.setItem(sessionStorageKey, JSON.stringify(sessions.slice(0, 20)));
 }
 
+function snapshotSession(state: AgentState, patch: Partial<AgentState> = {}): Session | undefined {
+  const activeSessionId = patch.activeSessionId ?? state.activeSessionId;
+  if (!activeSessionId) return undefined;
+  const session = state.sessions.find((item) => item.id === activeSessionId);
+  if (!session) return undefined;
+
+  const prompt = patch.prompt ?? state.prompt;
+  const workspace = patch.workspace ?? state.workspace;
+  const answer = patch.answer ?? state.answer;
+  const error = patch.error ?? state.error;
+
+  return {
+    ...session,
+    title: titleFromPrompt(prompt || session.title),
+    updatedAt: new Date().toISOString(),
+    workspace: workspace || session.workspace,
+    prompt,
+    status: patch.status ?? state.status,
+    runId: patch.runId ?? state.runId,
+    requestId: patch.requestId ?? state.requestId,
+    conversationId: patch.conversationId ?? state.conversationId,
+    events: patch.events ?? state.events,
+    steps: patch.steps ?? state.steps,
+    plan: patch.plan ?? state.plan,
+    trace: patch.trace ?? state.trace,
+    approvals: patch.approvals ?? state.approvals,
+    recentFiles: patch.recentFiles ?? state.recentFiles,
+    answer,
+    error
+  };
+}
+
+function upsertSessionSnapshot(sessions: Session[], snapshot?: Session) {
+  if (!snapshot) return sessions;
+  const next = sessions.map((session) => (session.id === snapshot.id ? snapshot : session));
+  writeSessions(next);
+  return next;
+}
+
 function titleFromPrompt(prompt: string) {
   const normalized = prompt.trim().replace(/\s+/g, " ");
   return normalized ? normalized.slice(0, 42) : "Untitled run";
@@ -161,8 +217,46 @@ function derivePlan(steps: StepState[]): PlanItem[] {
   return steps.map((step) => ({
     id: `step-${step.step}`,
     title: step.thought || step.tool || `Step ${step.step}`,
-    status: step.status
+    status: step.status === "completed" ? "done" : step.status === "running" ? "doing" : step.status === "failed" ? "blocked" : step.status,
+    detail: step.tool ? summarizeObservation(step.observation || step.tool, 86) : undefined
   }));
+}
+
+function mapPlanStatus(status: AgentPlanItemStatus): PlanItem["status"] {
+  if (status === "completed") return "done";
+  if (status === "in_progress") return "doing";
+  return status;
+}
+
+function planFromEvent(plan?: AgentPlanView): PlanItem[] | undefined {
+  if (!plan?.items) return undefined;
+  return plan.items.map((item, index) => ({
+    id: item.id || `plan-${index}`,
+    title: item.title,
+    status: mapPlanStatus(item.status),
+    detail: item.detail
+  }));
+}
+
+function traceDetail(event: AgentStreamEvent) {
+  if (event.type === "node_start") return event.nodeInputs?.join(", ");
+  if (event.type === "checkpoint_saved") return event.checkpointVersion ? `checkpoint v${event.checkpointVersion}` : "checkpoint saved";
+  if (event.type === "resume_started") return event.approvalId ? `approval ${event.approvalId}` : "resume started";
+  if (event.type.startsWith("sub_agent")) return event.subAgentSummary || event.subAgentRole || event.subAgentId;
+  if (event.type === "plan_updated") return event.plan?.summary || `${event.plan?.items.length ?? 0} items`;
+  if (event.type === "replan_started") return event.plan?.summary || "replanning";
+  if (event.type === "done") return event.stopReason;
+  if (event.type === "error") return event.message || event.code;
+  if (event.type === "approval_required") return event.operationPreview || event.riskReason;
+  return undefined;
+}
+
+function traceStatus(event: AgentStreamEvent) {
+  if (event.type === "error" || event.type === "sub_agent_failed") return "error";
+  if (event.type === "done" || event.type === "sub_agent_completed" || event.type === "checkpoint_saved") return "done";
+  if (event.type === "approval_required") return "blocked";
+  if (event.type === "replan_started" || event.type === "resume_started" || event.type === "sub_agent_started") return "running";
+  return undefined;
 }
 
 async function promptWithAttachment(prompt: string, selectedLocalFile?: LocalFileTarget) {
@@ -204,7 +298,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   status: "IDLE",
   workspace: "",
   workspaceTreeLoading: false,
-  maxSteps: 6,
   prompt: "",
   events: [],
   steps: [],
@@ -231,6 +324,55 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   setSelectedModel: (selectedModel) => set({ selectedModel }),
   setPrompt: (prompt) => set({ prompt }),
+  newSession: () =>
+    set((state) => {
+      state.stream?.close();
+      return {
+        activeSessionId: undefined,
+        runId: undefined,
+        requestId: undefined,
+        conversationId: undefined,
+        status: "IDLE",
+        statusMessage: "new session",
+        prompt: "",
+        error: undefined,
+        answer: undefined,
+        events: [],
+        steps: [],
+        plan: [],
+        trace: [],
+        approvals: {},
+        recentFiles: [],
+        selectedLocalFile: undefined,
+        selectedLocalFolder: undefined,
+        stream: undefined
+      };
+    }),
+  selectSession: (sessionId) =>
+    set((state) => {
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!session) return {};
+      state.stream?.close();
+      return {
+        activeSessionId: session.id,
+        runId: session.runId,
+        requestId: session.requestId,
+        conversationId: session.conversationId,
+        status: session.status || "IDLE",
+        statusMessage: "session selected",
+        prompt: session.prompt || session.title,
+        workspace: session.workspace || state.workspace,
+        error: session.error,
+        answer: session.answer,
+        events: session.events || [],
+        steps: session.steps || [],
+        plan: session.plan || [],
+        trace: session.trace || [],
+        approvals: session.approvals || {},
+        recentFiles: session.recentFiles || [],
+        stream: undefined
+      };
+    }),
   setWorkspace: (workspace) =>
     set({
       workspace,
@@ -239,7 +381,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       workspaceTree: undefined,
       workspaceTreeError: undefined
     }),
-  setMaxSteps: (maxSteps) => set({ maxSteps }),
   setSelectedLocalFile: (file) =>
     set((state) => {
       if (!file) return { selectedLocalFile: undefined };
@@ -343,7 +484,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       title: titleFromPrompt(prompt),
       createdAt,
       updatedAt: createdAt,
-      workspace: state.workspace || undefined
+      workspace: state.workspace || undefined,
+      prompt,
+      status: "CONNECTING",
+      events: [],
+      steps: [],
+      plan: [],
+      trace: [],
+      approvals: {},
+      recentFiles: []
     };
     const sessions = [session, ...state.sessions.filter((item) => item.title !== session.title)].slice(0, 20);
     writeSessions(sessions);
@@ -369,7 +518,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         question: message,
         message,
         workspace: state.workspace || undefined,
-        maxSteps: state.maxSteps,
         includeTrace: true
       };
       const stream = openAgentAskStream(request, {
@@ -414,6 +562,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const time = formatTime();
       const events = [...state.events, { id: crypto.randomUUID(), event, receivedAt: time }];
       let steps = state.steps;
+      let plan = state.plan;
       let trace = state.trace;
       let approvals = state.approvals;
       let recentFiles = state.recentFiles;
@@ -423,33 +572,74 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       let requestId = state.requestId;
       let conversationId = state.conversationId;
       let workspace = state.workspace;
+      let runId = state.runId;
+      let hasExplicitPlan = state.events.some(
+        (entry) => entry.event.type === "plan_updated" || entry.event.type === "replan_started" || Boolean(entry.event.plan)
+      );
+
+      runId = event.runId || runId;
+      requestId = event.requestId || requestId;
+      conversationId = event.conversationId || conversationId;
+      workspace = event.workspace || workspace;
 
       if (event.type === "meta") {
-        requestId = event.requestId || requestId;
-        conversationId = event.conversationId || conversationId;
-        workspace = event.workspace || workspace;
         nextStatus = "RUNNING";
         trace = [
           ...trace,
           {
             id: crypto.randomUUID(),
             label: "meta",
-            detail: event.requestId,
+            detail: event.runId || event.requestId,
             time
           }
         ];
       }
 
-      if (event.type === "node_start") {
+      if (
+        event.type === "node_start" ||
+        event.type === "checkpoint_saved" ||
+        event.type === "resume_started" ||
+        event.type === "sub_agent_started" ||
+        event.type === "sub_agent_completed" ||
+        event.type === "sub_agent_failed" ||
+        event.type === "sub_agent_summary"
+      ) {
         trace = [
           ...trace,
           {
             id: crypto.randomUUID(),
-            label: event.node || "node",
-            detail: event.nodeInputs?.join(", "),
+            label: event.node || event.subAgentName || event.type,
+            detail: traceDetail(event),
+            status: traceStatus(event),
             time
           }
         ];
+      }
+
+      if (event.type === "plan_updated" || event.type === "replan_started") {
+        const nextPlan = planFromEvent(event.plan);
+        if (nextPlan) {
+          plan = nextPlan;
+          hasExplicitPlan = true;
+        }
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: event.type === "plan_updated" ? "plan updated" : "replan started",
+            detail: traceDetail(event),
+            status: event.type === "replan_started" ? "running" : "done",
+            time
+          }
+        ];
+      }
+
+      if (event.type === "resume_started") {
+        const nextPlan = planFromEvent(event.plan);
+        if (nextPlan) {
+          plan = nextPlan;
+          hasExplicitPlan = true;
+        }
       }
 
       if (event.type === "thought" && event.step) {
@@ -497,6 +687,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           });
         }
         nextStatus = "WAITING_APPROVAL";
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: "approval required",
+            detail: traceDetail(event),
+            status: "blocked",
+            time
+          }
+        ];
       }
 
       if (event.type === "answer") {
@@ -505,26 +705,56 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
       if (event.type === "done") {
         nextStatus = "COMPLETED";
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: "done",
+            detail: traceDetail(event),
+            status: "done",
+            time
+          }
+        ];
       }
 
       if (event.type === "error") {
         nextStatus = "ERROR";
         error = event.message || event.code || "Agent stream error";
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: "error",
+            detail: traceDetail(event),
+            status: "error",
+            time
+          }
+        ];
       }
 
-      return {
+      if (!hasExplicitPlan) {
+        plan = derivePlan(steps);
+      }
+
+      const nextState = {
         events,
         steps,
-        plan: derivePlan(steps),
+        plan,
         trace,
         approvals,
         recentFiles,
         status: nextStatus,
         answer,
         error,
+        runId,
         requestId,
         conversationId,
         workspace
+      };
+
+      return {
+        ...nextState,
+        sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, nextState))
       };
     });
   },

@@ -48,6 +48,7 @@ export type AgentTool =
   | "code_search"
   | "replace_in_file"
   | "write_file"
+  | "edit_file"
   | "run_shell"
   | "git_op";
 
@@ -65,6 +66,14 @@ export type AgentNode =
 export type AgentEventType =
   | "meta"
   | "node_start"
+  | "plan_updated"
+  | "replan_started"
+  | "checkpoint_saved"
+  | "resume_started"
+  | "sub_agent_started"
+  | "sub_agent_completed"
+  | "sub_agent_failed"
+  | "sub_agent_summary"
   | "thought"
   | "tool_call"
   | "approval_required"
@@ -92,11 +101,31 @@ export type DiffPayload = {
   editable: boolean;
 };
 
+export type AgentPlanItemStatus = "pending" | "in_progress" | "completed" | "blocked" | "skipped";
+
+export type AgentPlanItemView = {
+  id?: string;
+  title: string;
+  status: AgentPlanItemStatus;
+  detail?: string;
+};
+
+export type AgentPlanView = {
+  items: AgentPlanItemView[];
+  title?: string;
+  summary?: string;
+  version?: number;
+  updatedAt?: string;
+};
+
 export type AgentStreamEvent = {
   type: AgentEventType;
+  runId?: string;
+  parentRunId?: string;
   requestId?: string;
   conversationId?: string;
   workspace?: string;
+  elapsedMs?: number;
   step?: number;
   node?: AgentNode;
   nodeInputs?: string[];
@@ -115,6 +144,17 @@ export type AgentStreamEvent = {
   stepCount?: number;
   code?: string;
   message?: string;
+  subAgentId?: string;
+  subAgentName?: string;
+  subAgentRole?: string;
+  subAgentStatus?: "started" | "completed" | "failed";
+  subAgentSummary?: string;
+  plan?: AgentPlanView;
+  checkpointVersion?: number;
+  /**
+   * Backend TODO: include diff on approval_required and GET approval responses.
+   * OLD_NEW uses oldText/newText; UNIFIED uses unifiedDiff.
+   */
   diff?: DiffPayload;
 };
 
@@ -138,6 +178,10 @@ export type AgentApprovalResponse = {
   riskReason: string;
   operationPreview: string;
   expiresAt: string;
+  /**
+   * Backend TODO: include diff for write approvals when available.
+   */
+  diff?: DiffPayload;
 };
 
 export type AgentApprovalDecisionRequest = {

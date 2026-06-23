@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, FileCode2, Folder, FolderCheck, FolderTree, History, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, FileCode2, Folder, FolderCheck, FolderTree, History, Plus, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -68,6 +68,8 @@ export function Sidebar() {
   const workspaceTreeLoading = useAgentStore((state) => state.workspaceTreeLoading);
   const workspaceTreeError = useAgentStore((state) => state.workspaceTreeError);
   const setWorkspace = useAgentStore((state) => state.setWorkspace);
+  const newSession = useAgentStore((state) => state.newSession);
+  const selectSession = useAgentStore((state) => state.selectSession);
   const resolveCurrentWorkspace = useAgentStore((state) => state.resolveCurrentWorkspace);
   const loadWorkspaceTree = useAgentStore((state) => state.loadWorkspaceTree);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
@@ -93,24 +95,33 @@ export function Sidebar() {
             <History size={13} />
             Sessions
           </div>
-          <Badge>{sessions.length}</Badge>
+          <div className="flex items-center gap-2">
+            <Badge>{sessions.length}</Badge>
+            <Button variant="secondary" size="icon" className="h-7 w-7" title="New session" onClick={newSession}>
+              <Plus size={14} />
+            </Button>
+          </div>
         </div>
         <div className="max-h-56 space-y-1 overflow-auto pr-1">
           {sessions.length === 0 ? (
             <div className="rounded border border-dashed border-border p-3 text-xs text-muted-foreground">No local runs</div>
           ) : (
             sessions.map((session) => (
-              <div
+              <button
                 key={session.id}
-                className={`rounded border px-2 py-2 text-sm ${
+                type="button"
+                className={`w-full rounded border px-2 py-2 text-left text-sm transition focus-ring ${
                   session.id === activeSessionId
                     ? "border-primary/40 bg-primary/10 text-foreground"
-                    : "border-border bg-[#0b0d0f] text-muted-foreground"
+                    : "border-border bg-[#0b0d0f] text-muted-foreground hover:border-primary/25 hover:bg-primary/[0.06] hover:text-foreground"
                 }`}
+                title={session.title}
+                aria-current={session.id === activeSessionId ? "true" : undefined}
+                onClick={() => selectSession(session.id)}
               >
                 <div className="truncate">{session.title}</div>
                 <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">{session.workspace || "default"}</div>
-              </div>
+              </button>
             ))
           )}
         </div>

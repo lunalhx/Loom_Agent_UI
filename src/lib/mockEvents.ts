@@ -3,10 +3,23 @@ import type { AgentStreamEvent } from "@/types/backend";
 export const normalRun: AgentStreamEvent[] = [
   {
     type: "meta",
+    runId: "mock-run-001",
     requestId: "mock-request-001",
     conversationId: "mock-conversation-001",
     workspace: "Loom_Agent_UI",
     stepCount: 3
+  },
+  {
+    type: "plan_updated",
+    runId: "mock-run-001",
+    plan: {
+      items: [
+        { id: "inspect", title: "Inspect React entry points", status: "completed" },
+        { id: "read", title: "Read workbench components", status: "in_progress" },
+        { id: "answer", title: "Summarize findings", status: "pending" }
+      ],
+      summary: "Initial UI inspection"
+    }
   },
   { type: "node_start", node: "model_call", nodeInputs: ["currentPrompt", "requestId", "conversationId"] },
   { type: "thought", step: 1, thought: "先搜索工作区中的 React 入口与组件结构。" },
@@ -18,9 +31,31 @@ export const normalRun: AgentStreamEvent[] = [
     observation: "src/main.tsx:4: createRoot(document.getElementById('root')!).render(<App />)",
     truncated: false
   },
+  { type: "checkpoint_saved", runId: "mock-run-001", checkpointVersion: 1 },
+  { type: "sub_agent_started", runId: "mock-run-001", subAgentId: "reviewer-1", subAgentName: "UI reviewer", subAgentRole: "review" },
+  { type: "sub_agent_summary", runId: "mock-run-001", subAgentId: "reviewer-1", subAgentName: "UI reviewer", subAgentSummary: "Flow rows should stay collapsed by default." },
+  { type: "sub_agent_completed", runId: "mock-run-001", subAgentId: "reviewer-1", subAgentName: "UI reviewer", subAgentSummary: "No blockers found." },
   { type: "thought", step: 2, thought: "读取主界面文件并定位需要更新的状态。" },
   { type: "tool_call", step: 2, tool: "read_file", input: { path: "src/App.tsx" }, workspace: "Loom_Agent_UI" },
-  { type: "observation", step: 2, tool: "read_file", observation: "src/App.tsx loaded", truncated: false },
+  {
+    type: "observation",
+    step: 2,
+    tool: "read_file",
+    observation: Array.from({ length: 26 }, (_, index) => `src/App.tsx:${index + 1}: mock content line ${index + 1}`).join("\n"),
+    truncated: false
+  },
+  {
+    type: "plan_updated",
+    runId: "mock-run-001",
+    plan: {
+      items: [
+        { id: "inspect", title: "Inspect React entry points", status: "completed" },
+        { id: "read", title: "Read workbench components", status: "completed" },
+        { id: "answer", title: "Summarize findings", status: "completed" }
+      ],
+      summary: "UI inspection complete"
+    }
+  },
   { type: "answer", answer: "完成检查。当前工作台已按事件流更新。```ts\nconst status = 'COMPLETED';\n```" },
   { type: "done", stopReason: "FINAL_ANSWER", stepCount: 2 }
 ];
@@ -51,6 +86,25 @@ export const approvalRun: AgentStreamEvent[] = [
     permissionLevel: "WRITE_CONFIRM",
     riskReason: "文件替换会修改工作区内容，需要人工确认",
     operationPreview: "replace_in_file path=src/App.tsx oldChars=14 newChars=19",
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    diff: {
+      format: "OLD_NEW",
+      path: "src/App.tsx",
+      oldText: "const label = 'old';\nrender(label);",
+      newText: "const label = 'new loom';\nrender(label);",
+      editable: false
+    }
+  },
+  {
+    type: "approval_required",
+    step: 2,
+    tool: "write_file",
+    input: { path: "src/generated.txt", content: "<348 chars>" },
+    approvalId: "mock-approval-no-diff",
+    workspace: "Loom_Agent_UI",
+    permissionLevel: "WRITE_CONFIRM",
+    riskReason: "新建文件需要人工确认",
+    operationPreview: "write_file path=src/generated.txt chars=348",
     expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
   }
 ];
