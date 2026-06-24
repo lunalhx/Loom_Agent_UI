@@ -57,7 +57,7 @@ function TreeNode({
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ open }: { open: boolean }) {
   const sessions = useAgentStore((state) => state.sessions);
   const activeSessionId = useAgentStore((state) => state.activeSessionId);
   const recentFiles = useAgentStore((state) => state.recentFiles);
@@ -88,7 +88,13 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="panel-edge hidden min-h-0 w-[282px] shrink-0 border-r lg:flex lg:flex-col">
+    <aside
+      className={`panel-edge min-h-0 shrink-0 overflow-hidden border-r transition-[width,opacity] duration-200 ease-out ${
+        open ? "w-[min(282px,42vw)] opacity-100" : "w-0 border-r-0 opacity-0"
+      }`}
+      aria-hidden={!open}
+    >
+      {open ? <div className="flex h-full w-[282px] flex-col">
       <section className="min-h-0 border-b border-border/80 p-3">
         <div className="mb-3 flex items-center justify-between">
           <div className="mono-label flex items-center gap-2">
@@ -205,6 +211,8 @@ export function Sidebar() {
           </div>
         )}
       </section>
+      </div>
+      : null}
     </aside>
   );
 }

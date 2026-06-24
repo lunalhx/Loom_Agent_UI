@@ -7,7 +7,7 @@ import {
   resolveWorkspace,
   type StreamHandle
 } from "@/lib/api";
-import { extractPaths, extractUnifiedDiff, formatTime, summarizeObservation } from "@/lib/utils";
+import { extractPaths, extractUnifiedDiff, formatTime, summarizeObservation, summarizeParams } from "@/lib/utils";
 import type {
   AgentApprovalDecisionRequest,
   AgentAskRequest,
@@ -34,6 +34,7 @@ export type Session = {
   events?: TimelineEntry[];
   steps?: StepState[];
   plan?: PlanItem[];
+  planTriggered?: boolean;
   trace?: TraceItem[];
   approvals?: Record<string, ApprovalState>;
   recentFiles?: string[];
@@ -72,6 +73,8 @@ export type TraceItem = {
   detail?: string;
   status?: string;
   time: string;
+  type: string;
+  iteration: number;
 };
 
 export type ApprovalState = {
@@ -115,9 +118,11 @@ type AgentState = {
   workspaceTreeLoading: boolean;
   workspaceTreeError?: string;
   prompt: string;
+  submittedPrompt?: string;
   events: TimelineEntry[];
   steps: StepState[];
   plan: PlanItem[];
+  planTriggered: boolean;
   trace: TraceItem[];
   approvals: Record<string, ApprovalState>;
   recentFiles: string[];
@@ -166,17 +171,17 @@ function snapshotSession(state: AgentState, patch: Partial<AgentState> = {}): Se
   const session = state.sessions.find((item) => item.id === activeSessionId);
   if (!session) return undefined;
 
-  const prompt = patch.prompt ?? state.prompt;
+  const submittedPrompt = patch.submittedPrompt ?? state.submittedPrompt;
   const workspace = patch.workspace ?? state.workspace;
   const answer = patch.answer ?? state.answer;
   const error = patch.error ?? state.error;
 
   return {
     ...session,
-    title: titleFromPrompt(prompt || session.title),
+    title: titleFromPrompt(submittedPrompt || session.prompt || session.title),
     updatedAt: new Date().toISOString(),
     workspace: workspace || session.workspace,
-    prompt,
+    prompt: submittedPrompt || session.prompt,
     status: patch.status ?? state.status,
     runId: patch.runId ?? state.runId,
     requestId: patch.requestId ?? state.requestId,
@@ -184,6 +189,7 @@ function snapshotSession(state: AgentState, patch: Partial<AgentState> = {}): Se
     events: patch.events ?? state.events,
     steps: patch.steps ?? state.steps,
     plan: patch.plan ?? state.plan,
+    planTriggered: patch.planTriggered ?? state.planTriggered,
     trace: patch.trace ?? state.trace,
     approvals: patch.approvals ?? state.approvals,
     recentFiles: patch.recentFiles ?? state.recentFiles,
@@ -211,15 +217,6 @@ function upsertStep(steps: StepState[], stepNumber: number, patch: Partial<StepS
   }
   const next: StepState = { step: stepNumber, status: "running", ...patch };
   return [...steps, next].sort((a, b) => a.step - b.step);
-}
-
-function derivePlan(steps: StepState[]): PlanItem[] {
-  return steps.map((step) => ({
-    id: `step-${step.step}`,
-    title: step.thought || step.tool || `Step ${step.step}`,
-    status: step.status === "completed" ? "done" : step.status === "running" ? "doing" : step.status === "failed" ? "blocked" : step.status,
-    detail: step.tool ? summarizeObservation(step.observation || step.tool, 86) : undefined
-  }));
 }
 
 function mapPlanStatus(status: AgentPlanItemStatus): PlanItem["status"] {
@@ -257,6 +254,32 @@ function traceStatus(event: AgentStreamEvent) {
   if (event.type === "approval_required") return "blocked";
   if (event.type === "replan_started" || event.type === "resume_started" || event.type === "sub_agent_started") return "running";
   return undefined;
+}
+
+function traceType(event: AgentStreamEvent, fallback?: string) {
+  if (event.traceNodeType) return event.traceNodeType;
+  if (event.type === "node_start") return event.node || fallback || "meta";
+  if (event.type === "tool_call" || event.type === "policy_denied" || event.type === "approval_required") return "tool_call";
+  if (event.type === "plan_updated" || event.type === "replan_started") return "plan_updated";
+  if (event.type === "answer" || event.type === "done") return "final_answer";
+  if (event.type === "thought") return "planner";
+  if (event.type === "meta") return "meta";
+  if (event.type === "observation" || event.type === "checkpoint_saved") return "meta";
+  return fallback || event.type;
+}
+
+function eventIteration(event: AgentStreamEvent, trace: TraceItem[]) {
+  if (event.iteration && event.iteration > 0) return event.iteration;
+  if (event.step && event.step > 0) return event.step;
+  return Math.max(1, trace.at(-1)?.iteration || 1);
+}
+
+function normalizeTrace(trace: TraceItem[] | undefined): TraceItem[] {
+  return (trace || []).map((item, index) => ({
+    ...item,
+    type: item.type || (item.status === "done" ? "final_answer" : "meta"),
+    iteration: item.iteration || Math.max(1, index + 1)
+  }));
 }
 
 async function promptWithAttachment(prompt: string, selectedLocalFile?: LocalFileTarget) {
@@ -299,9 +322,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   workspace: "",
   workspaceTreeLoading: false,
   prompt: "",
+  submittedPrompt: undefined,
   events: [],
   steps: [],
   plan: [],
+  planTriggered: false,
   trace: [],
   approvals: {},
   recentFiles: [],
@@ -335,11 +360,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         status: "IDLE",
         statusMessage: "new session",
         prompt: "",
+        submittedPrompt: undefined,
         error: undefined,
         answer: undefined,
         events: [],
         steps: [],
         plan: [],
+        planTriggered: false,
         trace: [],
         approvals: {},
         recentFiles: [],
@@ -361,13 +388,24 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         status: session.status || "IDLE",
         statusMessage: "session selected",
         prompt: session.prompt || session.title,
+        submittedPrompt: session.prompt || session.title,
         workspace: session.workspace || state.workspace,
         error: session.error,
         answer: session.answer,
         events: session.events || [],
         steps: session.steps || [],
         plan: session.plan || [],
-        trace: session.trace || [],
+        planTriggered:
+          session.planTriggered ??
+          Boolean(
+            session.events?.some(
+              ({ event }) =>
+                event.type === "plan_updated" ||
+                event.type === "replan_started" ||
+                (event.type === "resume_started" && Boolean(event.plan))
+            )
+          ),
+        trace: normalizeTrace(session.trace),
         approvals: session.approvals || {},
         recentFiles: session.recentFiles || [],
         stream: undefined
@@ -490,6 +528,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       events: [],
       steps: [],
       plan: [],
+      planTriggered: false,
       trace: [],
       approvals: {},
       recentFiles: []
@@ -502,11 +541,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       sessions,
       status: "CONNECTING",
       statusMessage: "connecting",
+      prompt: "",
+      submittedPrompt: prompt,
       error: undefined,
       answer: undefined,
       events: [],
       steps: [],
       plan: [],
+      planTriggered: false,
       trace: [],
       approvals: {},
       recentFiles: []
@@ -547,6 +589,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       events: [],
       steps: [],
       plan: [],
+      planTriggered: false,
       trace: [],
       approvals: {},
       recentFiles: [],
@@ -563,6 +606,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const events = [...state.events, { id: crypto.randomUUID(), event, receivedAt: time }];
       let steps = state.steps;
       let plan = state.plan;
+      let planTriggered = state.planTriggered;
       let trace = state.trace;
       let approvals = state.approvals;
       let recentFiles = state.recentFiles;
@@ -573,9 +617,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       let conversationId = state.conversationId;
       let workspace = state.workspace;
       let runId = state.runId;
-      let hasExplicitPlan = state.events.some(
-        (entry) => entry.event.type === "plan_updated" || entry.event.type === "replan_started" || Boolean(entry.event.plan)
-      );
 
       runId = event.runId || runId;
       requestId = event.requestId || requestId;
@@ -590,7 +631,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             id: crypto.randomUUID(),
             label: "meta",
             detail: event.runId || event.requestId,
-            time
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
           }
         ];
       }
@@ -611,16 +654,18 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             label: event.node || event.subAgentName || event.type,
             detail: traceDetail(event),
             status: traceStatus(event),
-            time
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
           }
         ];
       }
 
       if (event.type === "plan_updated" || event.type === "replan_started") {
+        planTriggered = true;
         const nextPlan = planFromEvent(event.plan);
         if (nextPlan) {
           plan = nextPlan;
-          hasExplicitPlan = true;
         }
         trace = [
           ...trace,
@@ -629,7 +674,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             label: event.type === "plan_updated" ? "plan updated" : "replan started",
             detail: traceDetail(event),
             status: event.type === "replan_started" ? "running" : "done",
-            time
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
           }
         ];
       }
@@ -638,7 +685,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         const nextPlan = planFromEvent(event.plan);
         if (nextPlan) {
           plan = nextPlan;
-          hasExplicitPlan = true;
+          planTriggered = true;
         }
       }
 
@@ -647,6 +694,18 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           thought: event.thought,
           status: "running"
         });
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: `step ${event.step} · thinking`,
+            detail: event.thought,
+            status: "running",
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
+          }
+        ];
       }
 
       if ((event.type === "tool_call" || event.type === "policy_denied") && event.step) {
@@ -656,6 +715,18 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           workspace: event.workspace,
           status: event.type === "policy_denied" ? "failed" : "running"
         });
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: `tool · ${event.tool || "unknown"}`,
+            detail: summarizeParams(event.input),
+            status: event.type === "policy_denied" ? "error" : "running",
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
+          }
+        ];
       }
 
       if (event.type === "observation" && event.step) {
@@ -667,6 +738,18 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           unifiedDiff: extractUnifiedDiff(event.observation),
           status: "completed"
         });
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: `step ${event.step} · completed`,
+            detail: summarizeObservation(event.observation, 96),
+            status: "done",
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
+          }
+        ];
       }
 
       if (event.type === "approval_required" && event.approvalId) {
@@ -694,13 +777,26 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             label: "approval required",
             detail: traceDetail(event),
             status: "blocked",
-            time
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
           }
         ];
       }
 
       if (event.type === "answer") {
         answer = event.answer;
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: "final answer",
+            status: "done",
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
+          }
+        ];
       }
 
       if (event.type === "done") {
@@ -712,7 +808,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             label: "done",
             detail: traceDetail(event),
             status: "done",
-            time
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
           }
         ];
       }
@@ -727,19 +825,18 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             label: "error",
             detail: traceDetail(event),
             status: "error",
-            time
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
           }
         ];
-      }
-
-      if (!hasExplicitPlan) {
-        plan = derivePlan(steps);
       }
 
       const nextState = {
         events,
         steps,
         plan,
+        planTriggered,
         trace,
         approvals,
         recentFiles,

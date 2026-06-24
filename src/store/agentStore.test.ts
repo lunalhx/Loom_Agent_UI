@@ -9,12 +9,14 @@ describe("agent store event reducer", () => {
       events: [],
       steps: [],
       plan: [],
+      planTriggered: false,
       trace: [],
       approvals: {},
       recentFiles: [],
       answer: undefined,
       error: undefined,
-      prompt: "mock task"
+      prompt: "mock task",
+      submittedPrompt: "mock task"
     });
   });
 
@@ -38,10 +40,33 @@ describe("agent store event reducer", () => {
 
     const state = useAgentStore.getState();
     expect(state.plan).toHaveLength(3);
+    expect(state.planTriggered).toBe(true);
     expect(state.plan.every((item) => item.status === "done")).toBe(true);
     expect(state.trace.some((item) => item.label === "plan updated")).toBe(true);
     expect(state.trace.some((item) => item.label === "checkpoint_saved")).toBe(true);
     expect(state.trace.some((item) => item.label === "UI reviewer")).toBe(true);
+  });
+
+  it("does not invent a todo plan for a simple run", () => {
+    useAgentStore.getState().receiveEvent({ type: "thought", step: 1, thought: "直接读取目录" });
+    useAgentStore.getState().receiveEvent({ type: "tool_call", step: 1, tool: "list_dir", input: {} });
+    useAgentStore.getState().receiveEvent({ type: "answer", answer: "共有 5 个文件夹" });
+
+    expect(useAgentStore.getState().plan).toEqual([]);
+    expect(useAgentStore.getState().planTriggered).toBe(false);
+  });
+
+  it("keeps legacy derived plan data hidden when no plan event was emitted", () => {
+    useAgentStore.setState({
+      plan: [
+        { id: "legacy-1", title: "普通执行步骤", status: "doing" },
+        { id: "legacy-2", title: "另一个普通步骤", status: "pending" }
+      ],
+      planTriggered: false
+    });
+
+    expect(useAgentStore.getState().plan).toHaveLength(2);
+    expect(useAgentStore.getState().planTriggered).toBe(false);
   });
 
   it("moves into WAITING_APPROVAL when approval is required", () => {
@@ -100,6 +125,7 @@ describe("agent store event reducer", () => {
     const state = useAgentStore.getState();
     expect(state.activeSessionId).toBe("session-1");
     expect(state.prompt).toBe("根目录里面有多少个文件夹");
+    expect(state.submittedPrompt).toBe("根目录里面有多少个文件夹");
     expect(state.workspace).toBe("java/Loom_Agent");
     expect(state.answer).toBeUndefined();
     expect(state.steps).toHaveLength(0);
@@ -120,7 +146,7 @@ describe("agent store event reducer", () => {
           status: "COMPLETED",
           steps: [{ step: 1, status: "completed", thought: "read files" }],
           answer: "这是之前的回答",
-          trace: [{ id: "trace-1", label: "done", time: "12:00:00", status: "done" }]
+          trace: [{ id: "trace-1", label: "done", time: "12:00:00", status: "done", type: "final_answer", iteration: 1 }]
         }
       ]
     });
@@ -130,6 +156,7 @@ describe("agent store event reducer", () => {
     const state = useAgentStore.getState();
     expect(state.activeSessionId).toBe("session-snapshot");
     expect(state.answer).toBe("这是之前的回答");
+    expect(state.submittedPrompt).toBe("解释架构");
     expect(state.steps[0].thought).toBe("read files");
     expect(state.trace[0].label).toBe("done");
     expect(state.status).toBe("COMPLETED");
@@ -149,8 +176,54 @@ describe("agent store event reducer", () => {
     const state = useAgentStore.getState();
     expect(state.activeSessionId).toBeUndefined();
     expect(state.prompt).toBe("");
+    expect(state.submittedPrompt).toBeUndefined();
     expect(state.answer).toBeUndefined();
     expect(state.steps).toHaveLength(0);
     expect(state.status).toBe("IDLE");
+  });
+
+  it("keeps the submitted message when the input draft is edited or cleared", () => {
+    useAgentStore.setState({
+      activeSessionId: "session-1",
+      prompt: "",
+      submittedPrompt: "你文件放在哪里的",
+      status: "RUNNING",
+      sessions: [
+        {
+          id: "session-1",
+          title: "你文件放在哪里的",
+          prompt: "你文件放在哪里的",
+          createdAt: "2026-06-24T00:00:00.000Z",
+          updatedAt: "2026-06-24T00:00:00.000Z",
+          status: "RUNNING"
+        }
+      ]
+    });
+
+    useAgentStore.getState().receiveEvent({ type: "thought", step: 1, thought: "查找文件位置" });
+
+    const state = useAgentStore.getState();
+    expect(state.prompt).toBe("");
+    expect(state.submittedPrompt).toBe("你文件放在哪里的");
+    expect(state.sessions[0].prompt).toBe("你文件放在哪里的");
+    expect(state.sessions[0].title).toBe("你文件放在哪里的");
+  });
+
+  it("clears the input draft when a run is submitted", async () => {
+    useAgentStore.setState({
+      prompt: "根目录下有多少个文件夹",
+      submittedPrompt: undefined,
+      workspace: "",
+      status: "IDLE",
+      sessions: [],
+      selectedLocalFile: undefined
+    });
+
+    await useAgentStore.getState().startRun();
+
+    const state = useAgentStore.getState();
+    expect(state.prompt).toBe("");
+    expect(state.submittedPrompt).toBe("根目录下有多少个文件夹");
+    expect(state.sessions[0].prompt).toBe("根目录下有多少个文件夹");
   });
 });

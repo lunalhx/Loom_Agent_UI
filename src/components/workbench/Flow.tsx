@@ -1,11 +1,8 @@
+import { AlertTriangle, CheckCircle2, FileDiff } from "lucide-react";
 import { useState } from "react";
-import { AlertTriangle, Bot, ChevronDown, ChevronRight, FileDiff, FileText, Wrench } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { basename, clipMultiline, cn, isWriteTool, summarizeParams, tryStringify } from "@/lib/utils";
-import { useAgentStore, type StepState } from "@/store/agentStore";
-import type { AgentStreamEvent, DiffPayload } from "@/types/backend";
+import { useAgentStore } from "@/store/agentStore";
+import type { AgentStreamEvent } from "@/types/backend";
 import { AnswerMarkdown } from "./AnswerMarkdown";
-import { CodeDiffPanel } from "./CodeDiffPanel";
 import { DiffApprovalCard } from "./DiffApprovalCard";
 
 const emptyPrompts = [
@@ -13,6 +10,17 @@ const emptyPrompts = [
   { icon: "✎", tone: "green", label: "给 domain 模块补充单元测试", prompt: "给 Loom_Agent-domain 模块补充单元测试" },
   { icon: "⚑", tone: "orange", label: "找出所有调用了废弃 API 的位置", prompt: "找出项目里所有调用了废弃 API 的位置" }
 ];
+
+const loadingLabels = ["Weaving", "Threading", "Spinning up", "On the loom"] as const;
+
+function shuffledLoadingLabels() {
+  const labels = [...loadingLabels];
+  for (let index = labels.length - 1; index > 0; index--) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [labels[index], labels[swapIndex]] = [labels[swapIndex], labels[index]];
+  }
+  return labels;
+}
 
 function workspaceLabel(workspace?: string, displayName?: string) {
   if (displayName) return displayName;
@@ -27,8 +35,7 @@ function EmptyWelcomeState() {
   const setPrompt = useAgentStore((state) => state.setPrompt);
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-[#1a1b1d] text-white/85">
-      <div className="flex min-h-[430px] flex-col items-center justify-center px-6 py-8">
+    <div className="flex min-h-[430px] flex-col items-center justify-center px-6 py-8 text-white/85">
         <div className="empty-loom mb-5" aria-hidden="true">
           <svg width="60" height="60" viewBox="0 0 60 60" fill="none">
             <line className="empty-loom-warp" x1="14" y1="8" x2="14" y2="52" />
@@ -59,12 +66,11 @@ function EmptyWelcomeState() {
             </button>
           ))}
         </div>
-      </div>
     </div>
   );
 }
 
-function MiniLoomLoader() {
+function MiniLoomLoader({ onShuttlePass }: { onShuttlePass: () => void }) {
   return (
     <div className="mini-loom" aria-hidden="true">
       <span className="mini-loom-warp mini-loom-warp-1" />
@@ -72,142 +78,21 @@ function MiniLoomLoader() {
       <span className="mini-loom-warp mini-loom-warp-3" />
       <span className="mini-loom-weft mini-loom-weft-1" />
       <span className="mini-loom-weft mini-loom-weft-2" />
-      <span className="mini-loom-shuttle" />
+      <span className="mini-loom-shuttle" onAnimationIteration={onShuttlePass} />
     </div>
   );
 }
 
-function LoadingBubble({ label }: { label: string }) {
+function LoadingBubble() {
+  const [labels] = useState(shuffledLoadingLabels);
+  const [labelIndex, setLabelIndex] = useState(0);
+
   return (
     <div className="flex justify-start">
       <div className="flex max-w-[82%] items-center gap-3 rounded-[14px] border border-white/10 bg-[#1a1b1d] px-3.5 py-3 text-[13px] text-white/52 shadow-insetline">
-        <MiniLoomLoader />
-        <span>{label}</span>
+        <MiniLoomLoader onShuttlePass={() => setLabelIndex((index) => (index + 1) % labels.length)} />
+        <span aria-live="polite">{labels[labelIndex]}</span>
       </div>
-    </div>
-  );
-}
-
-function inputPath(input?: Record<string, unknown>) {
-  const path = input?.path ?? input?.file ?? input?.filename;
-  return typeof path === "string" ? path : undefined;
-}
-
-function ToolCallChip({ step }: { step: StepState }) {
-  if (!step.tool) return null;
-  const filePath = inputPath(step.input);
-  const params = summarizeParams(step.input);
-  const label = filePath ? basename(filePath) : params || step.workspace || "workspace";
-  const writeTool = isWriteTool(step.tool);
-
-  return (
-    <div className="flex justify-start">
-      <div className="inline-flex max-w-full items-center gap-2 rounded-[10px] border border-white/10 bg-[#242628] px-3 py-2 text-[13px] text-white/70">
-        {writeTool ? <FileText className="shrink-0 text-emerald-300" size={15} /> : <Wrench className="shrink-0 text-sky-300" size={15} />}
-        <span
-          className={cn(
-            "shrink-0 rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold",
-            writeTool ? "bg-emerald-400/15 text-emerald-200" : "bg-sky-400/15 text-sky-200"
-          )}
-        >
-          {step.tool}
-        </span>
-        <span className="min-w-0 truncate font-mono">{label}</span>
-      </div>
-    </div>
-  );
-}
-
-function StepDetails({ step, hideObservation = false }: { step: StepState; hideObservation?: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const [showFullObservation, setShowFullObservation] = useState(false);
-  const clippedObservation = step.observation ? clipMultiline(step.observation) : undefined;
-  const observationText = showFullObservation ? step.observation : clippedObservation?.text;
-  const hasDetails = step.input || (step.observation && !hideObservation);
-
-  if (!hasDetails) return null;
-
-  return (
-    <div className="pl-1">
-      <button
-        type="button"
-        className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 font-mono text-[11px] text-white/34 transition hover:bg-white/[0.04] hover:text-white/58"
-        onClick={() => setExpanded((value) => !value)}
-      >
-        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        原始记录 · step {step.step} · {step.status}
-      </button>
-
-      {expanded ? (
-        <div className="mt-2 space-y-2 rounded-[10px] border border-white/10 bg-[#0b0d0f] p-3">
-          {step.input ? (
-            <pre className="max-h-44 overflow-auto rounded border border-white/10 bg-[#080a0c] p-3 font-mono text-xs text-white/48">
-              {tryStringify(step.input)}
-            </pre>
-          ) : null}
-
-          {step.observation && !hideObservation ? (
-            <div>
-              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded border border-white/10 bg-[#080a0c] p-3 font-mono text-xs leading-5 text-white/48">
-                {observationText}
-              </pre>
-              <div className="mt-2 flex items-center justify-between gap-2">
-                {step.truncated ? <div className="font-mono text-[11px] text-primary">truncated</div> : <span />}
-                {clippedObservation?.clipped ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 font-mono text-[11px] text-white/45"
-                    onClick={() => setShowFullObservation((value) => !value)}
-                  >
-                    {showFullObservation ? "收起全部" : "展开全部"}
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function AssistantStepMessage({ step }: { step: StepState }) {
-  const filePath = inputPath(step.input);
-  const diff = step.unifiedDiff
-    ? ({
-        format: "UNIFIED",
-        path: filePath || "changes.diff",
-        unifiedDiff: step.unifiedDiff,
-        editable: false
-      } satisfies DiffPayload)
-    : undefined;
-
-  return (
-    <div className="space-y-2">
-      {step.thought ? (
-        <div className="flex justify-start">
-          <div className="max-w-[82%] rounded-[14px] border border-white/10 bg-[#1a1b1d] px-4 py-3 shadow-insetline">
-            <div className="flex gap-2 text-[13px] italic leading-6 text-white/45">
-              <span className="shrink-0 font-semibold not-italic text-white/30">思考</span>
-              <span>{step.thought}</span>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <ToolCallChip step={step} />
-
-      {diff ? (
-        <div className="flex justify-start">
-          <div className="w-full max-w-[920px]">
-            <CodeDiffPanel diff={diff} path={filePath} />
-          </div>
-        </div>
-      ) : null}
-
-      <StepDetails step={step} hideObservation={Boolean(diff)} />
     </div>
   );
 }
@@ -215,8 +100,60 @@ function AssistantStepMessage({ step }: { step: StepState }) {
 function UserMessage({ prompt }: { prompt: string }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[78%] rounded-[14px] border border-primary/30 bg-primary/15 px-4 py-3 text-[14px] font-semibold leading-6 text-white/88 shadow-insetline">
+      <div className="max-w-[82%] rounded-[16px] rounded-br-[5px] border border-[rgba(243,160,76,.28)] bg-[rgba(243,160,76,.16)] px-4 py-3 text-[14px] leading-6 text-white/92 shadow-insetline">
         {prompt}
+      </div>
+    </div>
+  );
+}
+
+type ProcessRow = {
+  id: string;
+  description: string;
+  type: "planner" | "tool_call" | "result";
+};
+
+function AgentStepsCard() {
+  const steps = useAgentStore((state) => state.steps);
+  const rows = steps.flatMap<ProcessRow>((step) => {
+    const next: ProcessRow[] = [];
+    if (step.thought) {
+      next.push({ id: `${step.step}-thought`, description: step.thought, type: "planner" });
+    }
+    if (step.tool) {
+      next.push({ id: `${step.step}-tool`, description: `执行工具 ${step.tool}`, type: "tool_call" });
+    }
+    if (step.observation) {
+      next.push({ id: `${step.step}-result`, description: `步骤 ${step.step} 已完成`, type: "result" });
+    }
+    return next;
+  });
+
+  if (!rows.length) return null;
+
+  return (
+    <div className="flex justify-start">
+      <div className="w-full max-w-[820px] overflow-hidden rounded-[14px] border border-white/[0.08] bg-white/[0.022]">
+        <div className="border-b border-white/[0.06] px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/34">
+          Agent 执行过程
+        </div>
+        <div className="divide-y divide-white/[0.055]">
+          {rows.map((row) => (
+            <div key={row.id} className="grid grid-cols-[8px_minmax(0,1fr)_auto] items-center gap-2.5 px-3.5 py-2.5">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  row.type === "planner" ? "bg-[#F3A04C]" : row.type === "tool_call" ? "bg-[#2DBBA0]" : "bg-[#5BBF5B]"
+                }`}
+              />
+              <span className="min-w-0 truncate text-[12.5px] text-white/62" title={row.description}>
+                {row.description}
+              </span>
+              <span className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 font-mono text-[9.5px] text-white/32">
+                {row.type}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -255,36 +192,39 @@ function EventMarker({ event }: { event: AgentStreamEvent }) {
 }
 
 export function Flow() {
-  const prompt = useAgentStore((state) => state.prompt);
+  const activeSessionId = useAgentStore((state) => state.activeSessionId);
+  const submittedPrompt = useAgentStore((state) => state.submittedPrompt);
   const status = useAgentStore((state) => state.status);
   const steps = useAgentStore((state) => state.steps);
   const approvals = useAgentStore((state) => state.approvals);
   const answer = useAgentStore((state) => state.answer);
   const error = useAgentStore((state) => state.error);
   const events = useAgentStore((state) => state.events);
+  const trace = useAgentStore((state) => state.trace);
   const approvalList = Object.values(approvals);
   const activeRun = status !== "IDLE";
   const hasRunContent = activeRun || steps.length > 0 || approvalList.length > 0 || Boolean(answer) || Boolean(error);
-  const showPromptMessage = Boolean(prompt.trim()) && hasRunContent;
+  const showPromptMessage = Boolean(submittedPrompt?.trim()) && hasRunContent;
   const showLoading = ["CONNECTING", "RUNNING", "RESUMING"].includes(status) && !answer && !error;
   const isEmpty = !hasRunContent;
+  const elapsedMs = events.reduce((max, entry) => Math.max(max, entry.event.elapsedMs || 0), 0);
+  const iterationCount = new Set(trace.map((item) => item.iteration)).size || steps.length;
+  const toolCallCount = events.filter((entry) => entry.event.type === "tool_call").length;
 
   return (
     <main className="min-h-0 flex-1 overflow-auto bg-[#090b0d]">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-5">
-        {showPromptMessage ? <UserMessage prompt={prompt} /> : null}
+        {showPromptMessage ? <UserMessage prompt={submittedPrompt!} /> : null}
 
         {isEmpty ? <EmptyWelcomeState /> : null}
-
-        {steps.map((step) => (
-          <AssistantStepMessage key={step.step} step={step} />
-        ))}
 
         {approvalList.map((approval) => (
           <DiffApprovalCard key={approval.approvalId} approval={approval} />
         ))}
 
-        {showLoading ? <LoadingBubble label={steps.length === 0 ? "正在连接 coding agent..." : "正在继续处理..."} /> : null}
+        <AgentStepsCard />
+
+        {showLoading ? <LoadingBubble key={activeSessionId || submittedPrompt} /> : null}
 
         {events.map(({ id, event }) => (
           <EventMarker key={id} event={event} />
@@ -292,13 +232,19 @@ export function Flow() {
 
         {answer ? (
           <div className="flex justify-start">
-            <div className="max-w-[920px] rounded-[14px] border border-primary/25 bg-[#17120c] p-4 shadow-insetline">
-              <div className="mb-3 flex items-center gap-2 font-mono text-xs text-primary">
-                <Bot size={14} />
-                Final answer
+            <div className="relative w-full max-w-[920px] overflow-hidden rounded-[18px] border border-primary/25 bg-[linear-gradient(180deg,rgba(243,160,76,.075),rgba(243,160,76,.018))] p-5 shadow-insetline">
+              <span className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-[#F3A04C] to-[#E58522]" />
+              <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold text-primary">
+                <CheckCircle2 size={15} />
+                最终回答
               </div>
               <div className="text-[15px] leading-7 text-foreground">
                 <AnswerMarkdown content={answer} />
+              </div>
+              <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-white/[0.075] pt-3 font-mono text-[10.5px] text-white/34">
+                <span>耗时 {elapsedMs ? `${(elapsedMs / 1000).toFixed(1)}s` : "—"}</span>
+                <span>{iterationCount} 次迭代</span>
+                <span>{toolCallCount} 次工具调用</span>
               </div>
             </div>
           </div>

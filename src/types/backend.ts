@@ -120,6 +120,16 @@ export type AgentPlanView = {
 
 export type AgentStreamEvent = {
   type: AgentEventType;
+  /**
+   * Backend TODO: return the 1-based agent loop iteration for every traceable
+   * event. The UI falls back to `step` and local ordering until this is present.
+   */
+  iteration?: number;
+  /**
+   * Backend TODO: return a stable trace node type when `type` is too broad
+   * (for example planner/model_call/tool_call/final_answer).
+   */
+  traceNodeType?: string;
   runId?: string;
   parentRunId?: string;
   requestId?: string;
