@@ -13,6 +13,7 @@ describe("agent store event reducer", () => {
       trace: [],
       approvals: {},
       recentFiles: [],
+      runHistory: [],
       answer: undefined,
       error: undefined,
       prompt: "mock task",
@@ -225,5 +226,42 @@ describe("agent store event reducer", () => {
     expect(state.prompt).toBe("");
     expect(state.submittedPrompt).toBe("根目录下有多少个文件夹");
     expect(state.sessions[0].prompt).toBe("根目录下有多少个文件夹");
+  });
+
+  it("continues the active session and keeps the previous run visible", async () => {
+    useAgentStore.setState({
+      activeSessionId: "session-1",
+      prompt: "那这些文件夹分别是干什么的",
+      submittedPrompt: "根目录下有多少个文件夹",
+      status: "COMPLETED",
+      answer: "共有 5 个文件夹",
+      conversationId: "conversation-1",
+      events: [{ id: "event-1", receivedAt: "12:00:00", event: { type: "answer", answer: "共有 5 个文件夹" } }],
+      steps: [{ step: 1, status: "completed", thought: "读取根目录" }],
+      runHistory: [],
+      sessions: [
+        {
+          id: "session-1",
+          title: "根目录下有多少个文件夹",
+          prompt: "根目录下有多少个文件夹",
+          createdAt: "2026-06-24T00:00:00.000Z",
+          updatedAt: "2026-06-24T00:00:00.000Z",
+          status: "COMPLETED",
+          conversationId: "conversation-1"
+        }
+      ],
+      selectedLocalFile: undefined
+    });
+
+    await useAgentStore.getState().startRun();
+
+    const state = useAgentStore.getState();
+    expect(state.activeSessionId).toBe("session-1");
+    expect(state.sessions).toHaveLength(1);
+    expect(state.submittedPrompt).toBe("那这些文件夹分别是干什么的");
+    expect(state.runHistory).toHaveLength(1);
+    expect(state.runHistory[0].prompt).toBe("根目录下有多少个文件夹");
+    expect(state.runHistory[0].answer).toBe("共有 5 个文件夹");
+    expect(state.sessions[0].conversationId).toBe("conversation-1");
   });
 });

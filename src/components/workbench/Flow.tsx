@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, FileDiff } from "lucide-react";
 import { useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
+import type { RunHistoryItem, StepState } from "@/store/agentStore";
 import type { AgentStreamEvent } from "@/types/backend";
 import { AnswerMarkdown } from "./AnswerMarkdown";
 import { DiffApprovalCard } from "./DiffApprovalCard";
@@ -113,8 +114,7 @@ type ProcessRow = {
   type: "planner" | "tool_call" | "result";
 };
 
-function AgentStepsCard() {
-  const steps = useAgentStore((state) => state.steps);
+function ProcessCard({ steps }: { steps: StepState[] }) {
   const rows = steps.flatMap<ProcessRow>((step) => {
     const next: ProcessRow[] = [];
     if (step.thought) {
@@ -156,6 +156,81 @@ function AgentStepsCard() {
         </div>
       </div>
     </div>
+  );
+}
+
+function AgentStepsCard() {
+  const steps = useAgentStore((state) => state.steps);
+  return <ProcessCard steps={steps} />;
+}
+
+function FinalAnswerCard({
+  content,
+  elapsedMs,
+  iterationCount,
+  toolCallCount
+}: {
+  content: string;
+  elapsedMs: number;
+  iterationCount: number;
+  toolCallCount: number;
+}) {
+  return (
+    <div className="flex justify-start">
+      <div className="relative w-full max-w-[920px] overflow-hidden rounded-[18px] border border-primary/25 bg-[linear-gradient(180deg,rgba(243,160,76,.075),rgba(243,160,76,.018))] p-5 shadow-insetline">
+        <span className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-[#F3A04C] to-[#E58522]" />
+        <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold text-primary">
+          <CheckCircle2 size={15} />
+          最终回答
+        </div>
+        <div className="text-[15px] leading-7 text-foreground">
+          <AnswerMarkdown content={content} />
+        </div>
+        <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-white/[0.075] pt-3 font-mono text-[10.5px] text-white/34">
+          <span>耗时 {elapsedMs ? `${(elapsedMs / 1000).toFixed(1)}s` : "—"}</span>
+          <span>{iterationCount} 次迭代</span>
+          <span>{toolCallCount} 次工具调用</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunErrorCard({ error }: { error: string }) {
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[82%] rounded border border-red-500/35 bg-red-950/20 p-3">
+        <div className="mb-1 flex items-center gap-2 font-mono text-sm text-red-300">
+          <FileDiff size={15} />
+          run error
+        </div>
+        <div className="text-sm text-muted-foreground">{error}</div>
+      </div>
+    </div>
+  );
+}
+
+function HistoryRun({ run }: { run: RunHistoryItem }) {
+  const events = run.events || [];
+  const steps = run.steps || [];
+  const elapsedMs = events.reduce((max, entry) => Math.max(max, entry.event.elapsedMs || 0), 0);
+  const iterationCount = steps.length || 1;
+  const toolCallCount = events.filter((entry) => entry.event.type === "tool_call").length;
+
+  return (
+    <>
+      <UserMessage prompt={run.prompt} />
+      <ProcessCard steps={steps} />
+      {run.answer ? (
+        <FinalAnswerCard
+          content={run.answer}
+          elapsedMs={elapsedMs}
+          iterationCount={iterationCount}
+          toolCallCount={toolCallCount}
+        />
+      ) : null}
+      {run.error ? <RunErrorCard error={run.error} /> : null}
+    </>
   );
 }
 
@@ -201,12 +276,13 @@ export function Flow() {
   const error = useAgentStore((state) => state.error);
   const events = useAgentStore((state) => state.events);
   const trace = useAgentStore((state) => state.trace);
-  const approvalList = Object.values(approvals);
+  const runHistory = useAgentStore((state) => state.runHistory);
+  const approvalList = Object.values(approvals).filter((approval) => ["pending", "approving", "rejecting"].includes(approval.status));
   const activeRun = status !== "IDLE";
   const hasRunContent = activeRun || steps.length > 0 || approvalList.length > 0 || Boolean(answer) || Boolean(error);
   const showPromptMessage = Boolean(submittedPrompt?.trim()) && hasRunContent;
   const showLoading = ["CONNECTING", "RUNNING", "RESUMING"].includes(status) && !answer && !error;
-  const isEmpty = !hasRunContent;
+  const isEmpty = !hasRunContent && runHistory.length === 0;
   const elapsedMs = events.reduce((max, entry) => Math.max(max, entry.event.elapsedMs || 0), 0);
   const iterationCount = new Set(trace.map((item) => item.iteration)).size || steps.length;
   const toolCallCount = events.filter((entry) => entry.event.type === "tool_call").length;
@@ -214,13 +290,13 @@ export function Flow() {
   return (
     <main className="min-h-0 flex-1 overflow-auto bg-[#090b0d]">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-5">
+        {runHistory.map((run) => (
+          <HistoryRun key={run.id} run={run} />
+        ))}
+
         {showPromptMessage ? <UserMessage prompt={submittedPrompt!} /> : null}
 
         {isEmpty ? <EmptyWelcomeState /> : null}
-
-        {approvalList.map((approval) => (
-          <DiffApprovalCard key={approval.approvalId} approval={approval} />
-        ))}
 
         <AgentStepsCard />
 
@@ -230,37 +306,13 @@ export function Flow() {
           <EventMarker key={id} event={event} />
         ))}
 
-        {answer ? (
-          <div className="flex justify-start">
-            <div className="relative w-full max-w-[920px] overflow-hidden rounded-[18px] border border-primary/25 bg-[linear-gradient(180deg,rgba(243,160,76,.075),rgba(243,160,76,.018))] p-5 shadow-insetline">
-              <span className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-[#F3A04C] to-[#E58522]" />
-              <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold text-primary">
-                <CheckCircle2 size={15} />
-                最终回答
-              </div>
-              <div className="text-[15px] leading-7 text-foreground">
-                <AnswerMarkdown content={answer} />
-              </div>
-              <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-white/[0.075] pt-3 font-mono text-[10.5px] text-white/34">
-                <span>耗时 {elapsedMs ? `${(elapsedMs / 1000).toFixed(1)}s` : "—"}</span>
-                <span>{iterationCount} 次迭代</span>
-                <span>{toolCallCount} 次工具调用</span>
-              </div>
-            </div>
-          </div>
-        ) : null}
+        {answer ? <FinalAnswerCard content={answer} elapsedMs={elapsedMs} iterationCount={iterationCount} toolCallCount={toolCallCount} /> : null}
 
-        {error ? (
-          <div className="flex justify-start">
-            <div className="max-w-[82%] rounded border border-red-500/35 bg-red-950/20 p-3">
-              <div className="mb-1 flex items-center gap-2 font-mono text-sm text-red-300">
-                <FileDiff size={15} />
-                run error
-              </div>
-              <div className="text-sm text-muted-foreground">{error}</div>
-            </div>
-          </div>
-        ) : null}
+        {error ? <RunErrorCard error={error} /> : null}
+
+        {approvalList.map((approval) => (
+          <DiffApprovalCard key={approval.approvalId} approval={approval} />
+        ))}
       </div>
     </main>
   );

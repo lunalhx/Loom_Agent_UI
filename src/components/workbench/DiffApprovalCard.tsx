@@ -1,4 +1,4 @@
-import { Check, FilePenLine, TimerReset, X } from "lucide-react";
+import { Check, FilePenLine, Loader2, TimerReset, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { basename, isWriteTool } from "@/lib/utils";
 import { useAgentStore, type ApprovalState } from "@/store/agentStore";
@@ -24,7 +24,21 @@ export function DiffApprovalCard({ approval }: { approval: ApprovalState }) {
   const writeApproval = isWriteTool(event.tool);
   const filePath = diff?.path || stringInputValue(event.input, "path");
   const targetLabel = writeApproval ? basename(filePath) : event.tool;
+  const resultTarget = writeApproval ? basename(filePath) : event.tool || "操作";
   const decisionText = writeApproval ? `即将写入 ${filePath || "目标文件"}, 是否批准?` : event.operationPreview || event.riskReason;
+  const isResolved = approval.status === "approved" || approval.status === "rejected" || approval.status === "expired";
+  const resultText =
+    approval.status === "approved"
+      ? writeApproval
+        ? `已批准 · 已写入 ${resultTarget}`
+        : `已批准 · ${resultTarget}`
+      : approval.status === "rejected"
+        ? writeApproval
+          ? `已拒绝 · 未写入 ${resultTarget}`
+          : `已拒绝 · ${resultTarget}`
+        : approval.status === "expired"
+          ? `已过期 · 未处理 ${resultTarget}`
+          : undefined;
 
   return (
     <div className="space-y-3 rounded-[12px] border border-primary/25 bg-[#191a1c] p-3 shadow-insetline">
@@ -45,20 +59,36 @@ export function DiffApprovalCard({ approval }: { approval: ApprovalState }) {
 
       {writeApproval ? <CodeDiffPanel diff={diff} path={filePath} /> : null}
 
-      <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-primary/35 bg-primary/10 px-3 py-2.5">
-        <span className="rounded bg-primary/20 px-2.5 py-1 text-xs font-semibold text-primary">高危</span>
-        <span className="min-w-[180px] flex-1 text-[13px] font-semibold text-white/72">{decisionText}</span>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button variant="outline" size="sm" disabled={disabled} onClick={() => void decide(approval.approvalId, "REJECT")}>
-            <X size={14} />
-            拒绝
-          </Button>
-          <Button size="sm" disabled={disabled} onClick={() => void decide(approval.approvalId, "APPROVE")}>
-            <Check size={14} />
-            批准
-          </Button>
+      {isResolved ? (
+        <div
+          role="status"
+          className={
+            approval.status === "approved"
+              ? "flex min-h-12 items-center gap-3 rounded-[10px] border border-emerald-500/40 bg-emerald-950/35 px-3 py-2.5 text-emerald-300"
+              : "flex min-h-12 items-center gap-3 rounded-[10px] border border-red-500/40 bg-red-950/30 px-3 py-2.5 text-red-300"
+          }
+        >
+          {approval.status === "approved" ? <Check className="shrink-0" size={18} /> : <X className="shrink-0" size={18} />}
+          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{resultText}</span>
         </div>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-primary/35 bg-primary/10 px-3 py-2.5">
+          <span className="rounded bg-primary/20 px-2.5 py-1 text-xs font-semibold text-primary">{disabled ? "处理中" : "高危"}</span>
+          <span className="min-w-[180px] flex-1 text-[13px] font-semibold text-white/72">
+            {approval.status === "approving" ? "正在批准，请稍候..." : approval.status === "rejecting" ? "正在拒绝，请稍候..." : decisionText}
+          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="outline" size="sm" disabled={disabled} onClick={() => void decide(approval.approvalId, "REJECT")}>
+              {approval.status === "rejecting" ? <Loader2 className="animate-spin" size={14} /> : <X size={14} />}
+              拒绝
+            </Button>
+            <Button size="sm" disabled={disabled} onClick={() => void decide(approval.approvalId, "APPROVE")}>
+              {approval.status === "approving" ? <Loader2 className="animate-spin" size={14} /> : <Check size={14} />}
+              批准
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

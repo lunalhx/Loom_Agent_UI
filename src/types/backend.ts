@@ -171,6 +171,7 @@ export type AgentStreamEvent = {
 export type AgentAskRequest = {
   question?: string;
   message?: string;
+  conversationId?: string;
   workspace?: string;
   maxSteps?: number;
   includeTrace?: boolean;

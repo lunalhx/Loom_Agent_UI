@@ -20,28 +20,6 @@ import type {
   RunStatus
 } from "@/types/backend";
 
-export type Session = {
-  id: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-  workspace?: string;
-  prompt?: string;
-  status?: RunStatus;
-  runId?: string;
-  requestId?: string;
-  conversationId?: string;
-  events?: TimelineEntry[];
-  steps?: StepState[];
-  plan?: PlanItem[];
-  planTriggered?: boolean;
-  trace?: TraceItem[];
-  approvals?: Record<string, ApprovalState>;
-  recentFiles?: string[];
-  answer?: string;
-  error?: string;
-};
-
 export type TimelineEntry = {
   id: string;
   event: AgentStreamEvent;
@@ -81,6 +59,45 @@ export type ApprovalState = {
   approvalId: string;
   status: "pending" | "approving" | "approved" | "rejecting" | "rejected" | "expired";
   event: AgentStreamEvent;
+};
+
+export type RunHistoryItem = {
+  id: string;
+  prompt: string;
+  createdAt: string;
+  updatedAt: string;
+  workspace?: string;
+  status?: RunStatus;
+  runId?: string;
+  requestId?: string;
+  conversationId?: string;
+  events?: TimelineEntry[];
+  steps?: StepState[];
+  answer?: string;
+  error?: string;
+};
+
+export type Session = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  workspace?: string;
+  prompt?: string;
+  status?: RunStatus;
+  runId?: string;
+  requestId?: string;
+  conversationId?: string;
+  events?: TimelineEntry[];
+  steps?: StepState[];
+  plan?: PlanItem[];
+  planTriggered?: boolean;
+  trace?: TraceItem[];
+  approvals?: Record<string, ApprovalState>;
+  recentFiles?: string[];
+  answer?: string;
+  error?: string;
+  runHistory?: RunHistoryItem[];
 };
 
 export type LocalFileTarget = {
@@ -126,6 +143,7 @@ type AgentState = {
   trace: TraceItem[];
   approvals: Record<string, ApprovalState>;
   recentFiles: string[];
+  runHistory: RunHistoryItem[];
   selectedLocalFile?: LocalFileTarget;
   selectedLocalFolder?: LocalFolderTarget;
   answer?: string;
@@ -194,7 +212,8 @@ function snapshotSession(state: AgentState, patch: Partial<AgentState> = {}): Se
     approvals: patch.approvals ?? state.approvals,
     recentFiles: patch.recentFiles ?? state.recentFiles,
     answer,
-    error
+    error,
+    runHistory: patch.runHistory ?? state.runHistory
   };
 }
 
@@ -208,6 +227,34 @@ function upsertSessionSnapshot(sessions: Session[], snapshot?: Session) {
 function titleFromPrompt(prompt: string) {
   const normalized = prompt.trim().replace(/\s+/g, " ");
   return normalized ? normalized.slice(0, 42) : "Untitled run";
+}
+
+function snapshotCurrentRun(state: AgentState): RunHistoryItem | undefined {
+  const prompt = state.submittedPrompt?.trim();
+  if (!prompt) return undefined;
+  const hasRunContent =
+    state.events.length > 0 ||
+    state.steps.length > 0 ||
+    Boolean(state.answer) ||
+    Boolean(state.error) ||
+    !["IDLE", "CONNECTING"].includes(state.status);
+  if (!hasRunContent) return undefined;
+
+  return {
+    id: state.runId || state.requestId || crypto.randomUUID(),
+    prompt,
+    createdAt: state.events[0]?.receivedAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    workspace: state.workspace || undefined,
+    status: state.status,
+    runId: state.runId,
+    requestId: state.requestId,
+    conversationId: state.conversationId,
+    events: state.events,
+    steps: state.steps,
+    answer: state.answer,
+    error: state.error
+  };
 }
 
 function upsertStep(steps: StepState[], stepNumber: number, patch: Partial<StepState>): StepState[] {
@@ -330,6 +377,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   trace: [],
   approvals: {},
   recentFiles: [],
+  runHistory: [],
   sessions: typeof localStorage === "undefined" ? [] : readSessions(),
 
   loadModelConfig: async () => {
@@ -370,6 +418,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         trace: [],
         approvals: {},
         recentFiles: [],
+        runHistory: [],
         selectedLocalFile: undefined,
         selectedLocalFolder: undefined,
         stream: undefined
@@ -408,6 +457,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         trace: normalizeTrace(session.trace),
         approvals: session.approvals || {},
         recentFiles: session.recentFiles || [],
+        runHistory: session.runHistory || [],
         stream: undefined
       };
     }),
@@ -517,23 +567,34 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     state.stream?.close();
     const createdAt = new Date().toISOString();
+    const activeSession = state.activeSessionId ? state.sessions.find((item) => item.id === state.activeSessionId) : undefined;
+    const previousRun = snapshotCurrentRun(state);
+    const runHistory = previousRun ? [...state.runHistory, previousRun] : state.runHistory;
     const session: Session = {
-      id: crypto.randomUUID(),
+      ...(activeSession || {
+        id: crypto.randomUUID(),
+        createdAt
+      }),
       title: titleFromPrompt(prompt),
-      createdAt,
       updatedAt: createdAt,
       workspace: state.workspace || undefined,
       prompt,
       status: "CONNECTING",
+      runId: undefined,
+      requestId: undefined,
+      conversationId: state.conversationId,
       events: [],
       steps: [],
       plan: [],
       planTriggered: false,
       trace: [],
       approvals: {},
-      recentFiles: []
+      recentFiles: [],
+      answer: undefined,
+      error: undefined,
+      runHistory
     };
-    const sessions = [session, ...state.sessions.filter((item) => item.title !== session.title)].slice(0, 20);
+    const sessions = [session, ...state.sessions.filter((item) => item.id !== session.id)].slice(0, 20);
     writeSessions(sessions);
 
     set({
@@ -551,7 +612,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       planTriggered: false,
       trace: [],
       approvals: {},
-      recentFiles: []
+      recentFiles: [],
+      runHistory
     });
 
     try {
@@ -559,6 +621,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const request: AgentAskRequest = {
         question: message,
         message,
+        conversationId: state.conversationId || undefined,
         workspace: state.workspace || undefined,
         includeTrace: true
       };
@@ -883,18 +946,31 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             set({ status: "DISCONNECTED", statusMessage: "disconnected" });
           }
         },
-        onError: (error) => set({ status: "ERROR", error: error.message })
+        onError: (error) =>
+          set((state) => {
+            const nextState = {
+              status: "ERROR" as const,
+              error: error.message,
+              approvals: {
+                ...state.approvals,
+                [approvalId]: { ...approval, status: "pending" as const }
+              }
+            };
+            return {
+              ...nextState,
+              sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, nextState))
+            };
+          })
       });
-      set((state) => ({
-        stream,
-        approvals: {
-          ...state.approvals,
-          [approvalId]: {
-            ...approval,
-            status: decision === "APPROVE" ? "approved" : "rejected"
-          }
-        }
-      }));
+      set((state) => {
+        const nextApprovals = { ...state.approvals };
+        delete nextApprovals[approvalId];
+        const nextState = { stream, approvals: nextApprovals };
+        return {
+          ...nextState,
+          sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, nextState))
+        };
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : "审批失败";
       set({ status: "ERROR", error: message });
