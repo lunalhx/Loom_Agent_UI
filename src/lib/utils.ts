@@ -73,8 +73,11 @@ export function basename(path?: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() || path;
 }
 
-export function diffLineStats(diff?: { format: "OLD_NEW" | "UNIFIED"; oldText?: string; newText?: string; unifiedDiff?: string }) {
+export function diffLineStats(diff?: { format: "OLD_NEW" | "UNIFIED"; oldText?: string; newText?: string; unifiedDiff?: string; stats?: { added?: number; removed?: number } }) {
   if (!diff) return { added: 0, removed: 0 };
+  if (diff.stats) {
+    return { added: diff.stats.added ?? 0, removed: diff.stats.removed ?? 0 };
+  }
   if (diff.format === "UNIFIED") {
     const lines = diff.unifiedDiff?.split(/\r?\n/) ?? [];
     return lines.reduce(
@@ -89,10 +92,21 @@ export function diffLineStats(diff?: { format: "OLD_NEW" | "UNIFIED"; oldText?: 
 
   const oldLines = diff.oldText ? diff.oldText.split(/\r?\n/) : [];
   const newLines = diff.newText ? diff.newText.split(/\r?\n/) : [];
+  const common = longestCommonSubsequenceLength(oldLines, newLines);
   return {
-    added: Math.max(0, newLines.length - oldLines.length) || (diff.newText && diff.newText !== diff.oldText ? newLines.length : 0),
-    removed: Math.max(0, oldLines.length - newLines.length) || (diff.newText && diff.newText !== diff.oldText ? oldLines.length : 0)
+    added: Math.max(0, newLines.length - common),
+    removed: Math.max(0, oldLines.length - common)
   };
+}
+
+function longestCommonSubsequenceLength(oldLines: string[], newLines: string[]) {
+  const lcs = Array.from({ length: oldLines.length + 1 }, () => Array(newLines.length + 1).fill(0));
+  for (let i = oldLines.length - 1; i >= 0; i -= 1) {
+    for (let j = newLines.length - 1; j >= 0; j -= 1) {
+      lcs[i][j] = oldLines[i] === newLines[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  return lcs[0][0];
 }
 
 export function isWriteTool(tool?: string) {

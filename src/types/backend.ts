@@ -91,6 +91,35 @@ export type StopReason =
   | "TIMEOUT"
   | "MODEL_ERROR";
 
+export type InlineDiffPart = {
+  type: "unchanged" | "removed" | "added";
+  text: string;
+};
+
+export type StructuredDiffLine = {
+  type: "context" | "removed" | "added" | "folded";
+  oldLineNumber?: number;
+  newLineNumber?: number;
+  text?: string;
+  pairId?: number;
+  foldedCount?: number;
+  inlineDiff?: InlineDiffPart[];
+};
+
+export type DiffHunk = {
+  oldStart?: number;
+  oldLines?: number;
+  newStart?: number;
+  newLines?: number;
+  lines: StructuredDiffLine[];
+};
+
+export type DiffStats = {
+  added: number;
+  removed: number;
+  modified?: number;
+};
+
 export type DiffPayload = {
   format: "OLD_NEW" | "UNIFIED";
   path: string;
@@ -98,6 +127,8 @@ export type DiffPayload = {
   oldText?: string;
   newText?: string;
   unifiedDiff?: string;
+  hunks?: DiffHunk[];
+  stats?: DiffStats;
   editable: boolean;
 };
 
