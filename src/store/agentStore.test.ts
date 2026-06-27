@@ -83,6 +83,70 @@ describe("agent store event reducer", () => {
     expect(state.steps[0].status).toBe("blocked");
   });
 
+  it("handles high-risk file deletion as an approval request", () => {
+    useAgentStore.getState().receiveEvent({
+      type: "high_risk_approval_required",
+      step: 1,
+      tool: "delete_files",
+      input: { paths: ["src/obsolete.ts"] },
+      approvalId: "mock-high-risk-approval",
+      workspace: "Loom_Agent_UI",
+      permissionLevel: "HIGH_RISK_CONFIRM",
+      riskReason: "文件删除不可恢复，需要高危审批",
+      operationPreview: "删除 1 个文件（1 KB）:\n  src/obsolete.ts",
+      metadata: {
+        deletePreview: {
+          targetCount: 1,
+          fileCount: 1,
+          directoryCount: 0,
+          symlinkCount: 0,
+          totalBytes: 1024,
+          targets: [{ path: "src/obsolete.ts", kind: "FILE" }],
+          samplePaths: ["src/obsolete.ts"],
+          truncated: false,
+          riskFlags: [],
+          requiresSecondConfirmation: false
+        }
+      },
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    });
+
+    const state = useAgentStore.getState();
+    expect(state.status).toBe("WAITING_APPROVAL");
+    expect(state.approvals["mock-high-risk-approval"].status).toBe("pending");
+    expect(state.approvals["mock-high-risk-approval"].event.tool).toBe("delete_files");
+    expect(state.approvals["mock-high-risk-approval"].event.metadata?.deletePreview?.fileCount).toBe(1);
+    expect(state.steps[0].status).toBe("blocked");
+    expect(state.trace.at(-1)?.status).toBe("blocked");
+  });
+
+  it("marks an approved deletion executed after its observation", () => {
+    const event = {
+      type: "high_risk_approval_required" as const,
+      step: 3,
+      tool: "delete_files" as const,
+      approvalId: "delete-approved",
+      permissionLevel: "HIGH_RISK_CONFIRM" as const
+    };
+    useAgentStore.setState({
+      approvals: {
+        "delete-approved": {
+          approvalId: "delete-approved",
+          status: "approved",
+          event
+        }
+      }
+    });
+
+    useAgentStore.getState().receiveEvent({
+      type: "observation",
+      step: 3,
+      observation: "已删除 1 个目标（old.py）"
+    });
+
+    expect(useAgentStore.getState().approvals["delete-approved"].status).toBe("executed");
+  });
+
   it("renders policy denied as failed step while allowing a final answer", () => {
     for (const event of policyDeniedRun) {
       useAgentStore.getState().receiveEvent(event);

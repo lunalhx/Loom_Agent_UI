@@ -62,7 +62,7 @@ export type TraceItem = {
 
 export type ApprovalState = {
   approvalId: string;
-  status: "pending" | "approving" | "approved" | "rejecting" | "rejected" | "expired";
+  status: "pending" | "approving" | "approved" | "executed" | "execution_failed" | "rejecting" | "rejected" | "expired";
   event: AgentStreamEvent;
 };
 
@@ -306,6 +306,10 @@ function planFromEvent(plan?: AgentPlanView): PlanItem[] | undefined {
   }));
 }
 
+function isApprovalRequired(event: AgentStreamEvent) {
+  return event.type === "approval_required" || event.type === "high_risk_approval_required";
+}
+
 function traceDetail(event: AgentStreamEvent) {
   if (event.type === "node_start") return event.nodeInputs?.join(", ");
   if (event.type === "checkpoint_saved") return event.checkpointVersion ? `checkpoint v${event.checkpointVersion}` : "checkpoint saved";
@@ -315,14 +319,14 @@ function traceDetail(event: AgentStreamEvent) {
   if (event.type === "replan_started") return event.plan?.summary || "replanning";
   if (event.type === "done") return event.stopReason;
   if (event.type === "error") return event.message || event.code;
-  if (event.type === "approval_required") return event.operationPreview || event.riskReason;
+  if (isApprovalRequired(event)) return event.operationPreview || event.riskReason;
   return undefined;
 }
 
 function traceStatus(event: AgentStreamEvent) {
   if (event.type === "error" || event.type === "sub_agent_failed") return "error";
   if (event.type === "done" || event.type === "sub_agent_completed" || event.type === "checkpoint_saved") return "done";
-  if (event.type === "approval_required") return "blocked";
+  if (isApprovalRequired(event)) return "blocked";
   if (event.type === "replan_started" || event.type === "resume_started" || event.type === "sub_agent_started") return "running";
   return undefined;
 }
@@ -330,7 +334,7 @@ function traceStatus(event: AgentStreamEvent) {
 function traceType(event: AgentStreamEvent, fallback?: string) {
   if (event.traceNodeType) return event.traceNodeType;
   if (event.type === "node_start") return event.node || fallback || "meta";
-  if (event.type === "tool_call" || event.type === "policy_denied" || event.type === "approval_required") return "tool_call";
+  if (event.type === "tool_call" || event.type === "policy_denied" || isApprovalRequired(event)) return "tool_call";
   if (event.type === "plan_updated" || event.type === "replan_started") return "plan_updated";
   if (event.type === "answer" || event.type === "done") return "final_answer";
   if (event.type === "thought") return "planner";
@@ -901,9 +905,34 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             iteration: eventIteration(event, trace)
           }
         ];
+        const completedDeleteApproval = Object.values(approvals).find(
+          (item) =>
+            item.status === "approved" &&
+            item.event.tool === "delete_files" &&
+            item.event.step === event.step
+        );
+        if (completedDeleteApproval) {
+          approvals = {
+            ...approvals,
+            [completedDeleteApproval.approvalId]: {
+              ...completedDeleteApproval,
+              status: event.observation?.includes("tool_error:")
+                ? "execution_failed"
+                : "executed"
+            }
+          };
+        }
       }
 
-      if (event.type === "approval_required" && event.approvalId) {
+      if (isApprovalRequired(event) && event.approvalId) {
+        approvals = Object.fromEntries(
+          Object.entries(approvals).map(([id, item]) => [
+            id,
+            item.status === "approved" && item.event.tool === event.tool && item.event.step === event.step
+              ? { ...item, status: "expired" as const }
+              : item
+          ])
+        );
         approvals = {
           ...approvals,
           [event.approvalId]: {
@@ -1026,7 +1055,18 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     try {
       const stream = openApprovalDecisionStream(approvalId, { decision, reason }, {
-        onOpen: () => set({ status: "RUNNING", statusMessage: "resumed" }),
+        onOpen: () =>
+          set((state) => ({
+            status: "RUNNING",
+            statusMessage: "resumed",
+            approvals: {
+              ...state.approvals,
+              [approvalId]: {
+                ...(state.approvals[approvalId] || approval),
+                status: decision === "APPROVE" ? "approved" : "rejected"
+              }
+            }
+          })),
         onEvent: get().receiveEvent,
         onDisconnect: () => {
           const status = get().status;
@@ -1054,9 +1094,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           })
       });
       set((state) => {
-        const nextApprovals = { ...state.approvals };
-        delete nextApprovals[approvalId];
-        const nextState = { stream, approvals: nextApprovals };
+        const nextState = { stream };
         return {
           ...nextState,
           sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, nextState))

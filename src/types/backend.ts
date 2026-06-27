@@ -49,6 +49,7 @@ export type AgentTool =
   | "replace_in_file"
   | "write_file"
   | "edit_file"
+  | "delete_files"
   | "run_shell"
   | "git_op";
 
@@ -77,6 +78,7 @@ export type AgentEventType =
   | "thought"
   | "tool_call"
   | "approval_required"
+  | "high_risk_approval_required"
   | "policy_denied"
   | "observation"
   | "answer"
@@ -149,6 +151,29 @@ export type AgentPlanView = {
   updatedAt?: string;
 };
 
+export type DeletePreviewTarget = {
+  path: string;
+  kind: "FILE" | "DIRECTORY" | "SYMLINK";
+};
+
+export type DeleteApprovalPreview = {
+  targetCount: number;
+  fileCount: number;
+  directoryCount: number;
+  symlinkCount: number;
+  totalBytes: number;
+  targets: DeletePreviewTarget[];
+  samplePaths: string[];
+  truncated: boolean;
+  riskFlags: string[];
+  requiresSecondConfirmation: boolean;
+};
+
+export type AgentEventMetadata = {
+  deletePreview?: DeleteApprovalPreview;
+  [key: string]: unknown;
+};
+
 export type AgentStreamEvent = {
   type: AgentEventType;
   /**
@@ -174,7 +199,7 @@ export type AgentStreamEvent = {
   tool?: AgentTool;
   input?: Record<string, unknown>;
   approvalId?: string;
-  permissionLevel?: "READ_ONLY" | "WRITE_CONFIRM" | "HIGH_RISK_DENY";
+  permissionLevel?: "READ_ONLY" | "WRITE_CONFIRM" | "HIGH_RISK_CONFIRM" | "HIGH_RISK_DENY";
   riskReason?: string;
   operationPreview?: string;
   expiresAt?: string;
@@ -192,10 +217,11 @@ export type AgentStreamEvent = {
   subAgentSummary?: string;
   plan?: AgentPlanView;
   checkpointVersion?: number;
+  metadata?: AgentEventMetadata;
   /**
    * Backend TODO: include diff on approval_required and GET approval responses.
    * OLD_NEW uses oldText/newText; UNIFIED uses unifiedDiff.
-   */
+  */
   diff?: DiffPayload;
 };
 
@@ -216,14 +242,15 @@ export type AgentApprovalResponse = {
   workspace: string;
   tool: string;
   input: Record<string, unknown>;
-  permissionLevel: "WRITE_CONFIRM";
+  permissionLevel: "WRITE_CONFIRM" | "HIGH_RISK_CONFIRM";
   riskReason: string;
   operationPreview: string;
   expiresAt: string;
   /**
    * Backend TODO: include diff for write approvals when available.
-   */
+  */
   diff?: DiffPayload;
+  metadata?: AgentEventMetadata;
 };
 
 export type AgentApprovalDecisionRequest = {
