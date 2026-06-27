@@ -5,6 +5,10 @@ import {
   openAgentAskStream,
   openApprovalDecisionStream,
   resolveWorkspace,
+  getRunUndo,
+  undoRun,
+  ApiRequestError,
+  FeatureMissingError,
   type StreamHandle
 } from "@/lib/api";
 import { extractPaths, extractUnifiedDiff, formatTime, summarizeObservation, summarizeParams } from "@/lib/utils";
@@ -15,6 +19,7 @@ import type {
   AgentPlanView,
   AgentStreamEvent,
   AgentTool,
+  AgentUndoResponse,
   AgentWorkspaceTreeNode,
   ModelConfigResponse,
   RunStatus
@@ -98,6 +103,7 @@ export type Session = {
   answer?: string;
   error?: string;
   runHistory?: RunHistoryItem[];
+  undoByRunId?: Record<string, UndoViewState>;
 };
 
 export type LocalFileTarget = {
@@ -114,6 +120,14 @@ export type LocalFolderTarget = {
   fileCount: number;
   totalSize: number;
   paths: string[];
+};
+
+export type UndoViewState = {
+  loading: boolean;
+  executing: boolean;
+  response?: AgentUndoResponse;
+  errorCode?: string;
+  error?: string;
 };
 
 const defaultModels = ["deepseek-v4-flash", "deepseek-v4-pro"];
@@ -151,6 +165,9 @@ type AgentState = {
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; costUsd?: number };
   sessions: Session[];
   stream?: StreamHandle;
+  undoByRunId: Record<string, UndoViewState>;
+  undoDialogRunId?: string;
+  undoFeatureMissing: boolean;
   loadModelConfig: () => Promise<void>;
   setSelectedModel: (model: string) => void;
   setPrompt: (prompt: string) => void;
@@ -166,6 +183,12 @@ type AgentState = {
   receiveEvent: (event: AgentStreamEvent) => void;
   stopRun: () => void;
   decide: (approvalId: string, decision: AgentApprovalDecisionRequest["decision"], reason?: string) => Promise<void>;
+  loadUndo: (runId: string) => Promise<void>;
+  loadUndoStack: (runIds: string[]) => Promise<void>;
+  openUndoDialog: (runId: string) => void;
+  closeUndoDialog: () => void;
+  confirmUndo: (runId: string) => Promise<void>;
+  refreshUndoAfterTerminal: () => void;
 };
 
 const sessionStorageKey = "loom-agent:sessions";
@@ -213,7 +236,8 @@ function snapshotSession(state: AgentState, patch: Partial<AgentState> = {}): Se
     recentFiles: patch.recentFiles ?? state.recentFiles,
     answer,
     error,
-    runHistory: patch.runHistory ?? state.runHistory
+    runHistory: patch.runHistory ?? state.runHistory,
+    undoByRunId: patch.undoByRunId ?? state.undoByRunId
   };
 }
 
@@ -362,6 +386,42 @@ function mergeTreeNode(
   };
 }
 
+const undoErrorLabels: Record<string, string> = {
+  workspace_changed_after_run: "文件在任务结束后又被修改，未执行撤销",
+  undo_not_latest: "必须先处理更新的一轮修改",
+  git_head_changed: "当前分支或 HEAD 已变化，不能安全撤销",
+  undo_already_applied: "本轮修改已经撤销",
+  undo_snapshot_expired: "撤销点已过期",
+  undo_not_available: "本轮包含不可逆 Git 操作",
+  undo_failed_rolled_back: "撤销失败，工作区已恢复到执行前状态",
+  undo_recovery_required: "自动恢复失败，需要人工检查 Git 状态"
+};
+
+function pollUndoUntilReady(runId: string) {
+  const delays = [250, 500, 1000];
+  let attempts = 0;
+
+  const tryPoll = () => {
+    const current = useAgentStore.getState().undoByRunId[runId];
+    if (current?.response?.status !== "OPEN" && current?.response?.status !== undefined) return;
+    if (attempts >= delays.length) return;
+
+    setTimeout(() => {
+      const latest = useAgentStore.getState().undoByRunId[runId];
+      if (latest?.response?.status !== "OPEN") return;
+      attempts++;
+      void useAgentStore.getState().loadUndo(runId).then(() => {
+        const after = useAgentStore.getState().undoByRunId[runId];
+        if (after?.response?.status === "OPEN" && attempts < delays.length) {
+          tryPoll();
+        }
+      });
+    }, delays[attempts]);
+  };
+
+  tryPoll();
+}
+
 export const useAgentStore = create<AgentState>((set, get) => ({
   allowedModels: defaultModels,
   selectedModel: defaultModels[0],
@@ -379,6 +439,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   recentFiles: [],
   runHistory: [],
   sessions: typeof localStorage === "undefined" ? [] : readSessions(),
+  undoByRunId: {},
+  undoFeatureMissing: false,
 
   loadModelConfig: async () => {
     try {
@@ -421,6 +483,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         runHistory: [],
         selectedLocalFile: undefined,
         selectedLocalFolder: undefined,
+        undoByRunId: {},
+        undoDialogRunId: undefined,
+        undoFeatureMissing: false,
         stream: undefined
       };
     }),
@@ -429,6 +494,23 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const session = state.sessions.find((item) => item.id === sessionId);
       if (!session) return {};
       state.stream?.close();
+      const restoredUndo = session.undoByRunId || {};
+      // Reset stale executing/loading states
+      const sanitizedUndo: Record<string, UndoViewState> = {};
+      for (const [key, value] of Object.entries(restoredUndo)) {
+        sanitizedUndo[key] = {
+          ...value,
+          loading: false,
+          executing: false
+        };
+      }
+      // Query undo for current run + last 10 history runs
+      const currentRunId = session.runId;
+      const historyRunIds = (session.runHistory || []).map((r) => r.runId).filter(Boolean).slice(0, 10) as string[];
+      const idsToQuery = currentRunId ? [currentRunId, ...historyRunIds] : historyRunIds;
+      setTimeout(() => {
+        void useAgentStore.getState().loadUndoStack(idsToQuery);
+      }, 0);
       return {
         activeSessionId: session.id,
         runId: session.runId,
@@ -458,6 +540,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         approvals: session.approvals || {},
         recentFiles: session.recentFiles || [],
         runHistory: session.runHistory || [],
+        undoByRunId: sanitizedUndo,
+        undoFeatureMissing: false,
         stream: undefined
       };
     }),
@@ -613,7 +697,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       trace: [],
       approvals: {},
       recentFiles: [],
-      runHistory
+      runHistory,
+      undoDialogRunId: undefined
     });
 
     try {
@@ -632,6 +717,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           const status = get().status;
           if (!["COMPLETED", "ERROR", "WAITING_APPROVAL", "CANCELLED_LOCAL"].includes(status)) {
             set({ status: "DISCONNECTED", statusMessage: "disconnected" });
+          }
+          if (["COMPLETED", "ERROR"].includes(status)) {
+            setTimeout(() => get().refreshUndoAfterTerminal(), 100);
           }
         },
         onError: (error) => set({ status: "ERROR", error: error.message })
@@ -945,6 +1033,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           if (!["COMPLETED", "ERROR", "WAITING_APPROVAL", "CANCELLED_LOCAL"].includes(status)) {
             set({ status: "DISCONNECTED", statusMessage: "disconnected" });
           }
+          if (["COMPLETED", "ERROR"].includes(status)) {
+            setTimeout(() => get().refreshUndoAfterTerminal(), 100);
+          }
         },
         onError: (error) =>
           set((state) => {
@@ -975,5 +1066,123 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const message = error instanceof Error ? error.message : "审批失败";
       set({ status: "ERROR", error: message });
     }
+  },
+
+  loadUndo: async (runId) => {
+    if (!runId) return;
+    set((state) => ({
+      undoByRunId: {
+        ...state.undoByRunId,
+        [runId]: { ...(state.undoByRunId[runId] || {}), loading: true, error: undefined, errorCode: undefined }
+      }
+    }));
+    try {
+      const response = await getRunUndo(runId);
+      set((state) => ({
+        undoByRunId: { ...state.undoByRunId, [runId]: { loading: false, executing: false, response } }
+      }));
+      if (response.status === "OPEN") {
+        pollUndoUntilReady(runId);
+      }
+    } catch (error) {
+      if (error instanceof FeatureMissingError) {
+        set({ undoFeatureMissing: true });
+        return;
+      }
+      const apiError = error instanceof ApiRequestError ? error : undefined;
+      set((state) => ({
+        undoByRunId: {
+          ...state.undoByRunId,
+          [runId]: {
+            loading: false,
+            executing: false,
+            errorCode: apiError?.code,
+            error: apiError?.info || (error instanceof Error ? error.message : "查询撤销状态失败")
+          }
+        }
+      }));
+    }
+  },
+
+  loadUndoStack: async (runIds) => {
+    const unique = Array.from(new Set(runIds.filter(Boolean)));
+    if (unique.length === 0) return;
+    await Promise.allSettled(unique.map((id) => get().loadUndo(id)));
+  },
+
+  openUndoDialog: (runId) => {
+    set({ undoDialogRunId: runId });
+    void get().loadUndo(runId);
+  },
+
+  closeUndoDialog: () => {
+    set({ undoDialogRunId: undefined });
+  },
+
+  confirmUndo: async (runId) => {
+    const current = get().undoByRunId[runId];
+    if (!current?.response || current.executing) return;
+    const snapshotVersion = current.response.snapshotVersion;
+    set((state) => ({
+      undoByRunId: {
+        ...state.undoByRunId,
+        [runId]: { ...current, executing: true, error: undefined, errorCode: undefined }
+      }
+    }));
+    try {
+      const response = await undoRun(runId, { expectedSnapshotVersion: snapshotVersion });
+      set((state) => {
+        const nextUndo = {
+          ...state.undoByRunId,
+          [runId]: { loading: false, executing: false, response }
+        };
+        return {
+          undoByRunId: nextUndo,
+          undoDialogRunId: undefined,
+          sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, { undoByRunId: nextUndo }))
+        };
+      });
+      void get().resolveCurrentWorkspace();
+      const state = get();
+      const currentRunId = state.runId;
+      const runHistoryIds = state.runHistory.map((r) => r.runId).filter(Boolean) as string[];
+      const ids = currentRunId ? [currentRunId, ...runHistoryIds] : runHistoryIds;
+      void get().loadUndoStack(ids);
+    } catch (error) {
+      const apiError = error instanceof ApiRequestError ? error : undefined;
+      const errCode = apiError?.code || "undo_failed";
+      const errMsg = (apiError?.code && undoErrorLabels[apiError.code]) || apiError?.info || (error instanceof Error ? error.message : "撤销失败");
+      set((state) => {
+        const nextUndo = {
+          ...state.undoByRunId,
+          [runId]: {
+            ...(state.undoByRunId[runId] || {}),
+            executing: false,
+            errorCode: errCode,
+            error: errMsg
+          }
+        };
+        return {
+          undoByRunId: nextUndo,
+          sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, { undoByRunId: nextUndo }))
+        };
+      });
+      if (errCode === "undo_not_latest") {
+        const state = get();
+        const currentRunId = state.runId;
+        const runHistoryIds = state.runHistory.map((r) => r.runId).filter(Boolean) as string[];
+        const ids = currentRunId ? [currentRunId, ...runHistoryIds] : runHistoryIds;
+        void get().loadUndoStack(ids);
+      }
+    }
+  },
+
+  refreshUndoAfterTerminal: () => {
+    const state = get();
+    if (state.undoFeatureMissing) return;
+    const currentRunId = state.runId;
+    const runHistoryIds = state.runHistory.map((r) => r.runId).filter(Boolean) as string[];
+    const ids = currentRunId ? [currentRunId, ...runHistoryIds] : runHistoryIds;
+    void get().loadUndoStack(ids);
   }
 }));

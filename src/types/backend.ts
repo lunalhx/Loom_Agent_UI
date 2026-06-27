@@ -1,7 +1,7 @@
 export type ResponseCode = "0000" | "0001" | "0002" | "1001" | "1002" | "1003";
 
 export type ApiResponse<T> = {
-  code: ResponseCode;
+  code: string;
   info: string;
   data?: T;
 };
@@ -287,4 +287,45 @@ export type ApprovalDecisionResponse = {
   runId?: string;
   conversationId?: string;
   streamUrl: string;
+};
+
+export type UndoStatus =
+  | "OPEN"
+  | "READY"
+  | "NO_CHANGES"
+  | "UNAVAILABLE"
+  | "UNDOING"
+  | "UNDONE"
+  | "EXPIRED"
+  | "FAILED";
+
+export type UndoChangeType =
+  | "ADDED"
+  | "MODIFIED"
+  | "DELETED"
+  | "RENAMED"
+  | "TYPE_CHANGED";
+
+export type UndoChangedFile = {
+  path: string;
+  changeType: UndoChangeType;
+  oldPath?: string;
+};
+
+export type AgentUndoResponse = {
+  runId: string;
+  status: UndoStatus;
+  canUndo: boolean;
+  snapshotVersion: number;
+  changedFiles: UndoChangedFile[];
+  changedFileCount: number;
+  changedBytes?: number;
+  restoredFiles?: string[];
+  reasonCode?: string;
+  reason?: string;
+  expiresAt?: string;
+};
+
+export type AgentUndoRequest = {
+  expectedSnapshotVersion: number;
 };

@@ -3,6 +3,8 @@ import type {
   AgentApprovalResponse,
   AgentAskRequest,
   AgentStreamEvent,
+  AgentUndoRequest,
+  AgentUndoResponse,
   AgentWorkspaceRequest,
   AgentWorkspaceResponse,
   AgentWorkspaceTreeRequest,
@@ -18,6 +20,22 @@ export class FeatureMissingError extends Error {
   }
 }
 
+export class ApiRequestError extends Error {
+  httpStatus: number;
+  code: string;
+  info: string;
+  data?: unknown;
+
+  constructor(httpStatus: number, code: string, info: string, data?: unknown) {
+    super(info || code || `HTTP ${httpStatus}`);
+    this.name = "ApiRequestError";
+    this.httpStatus = httpStatus;
+    this.code = code;
+    this.info = info;
+    this.data = data;
+  }
+}
+
 const API_BASE = "/api/v1";
 
 async function parseApiResponse<T>(response: globalThis.Response): Promise<T> {
@@ -29,7 +47,7 @@ async function parseApiResponse<T>(response: globalThis.Response): Promise<T> {
   if (typeof body === "object" && body && "code" in body) {
     const wrapped = body as ApiResponse<T>;
     if (wrapped.code !== "0000") {
-      throw new Error(wrapped.info || "请求失败");
+      throw new ApiRequestError(response.status, wrapped.code, wrapped.info || "请求失败", wrapped.data);
     }
     return wrapped.data as T;
   }
@@ -157,4 +175,18 @@ function dispatchSseEvent(rawEvent: string, handlers: StreamHandlers) {
   } catch (error) {
     handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
   }
+}
+
+export async function getRunUndo(runId: string): Promise<AgentUndoResponse> {
+  const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/undo`);
+  return parseApiResponse<AgentUndoResponse>(response);
+}
+
+export async function undoRun(runId: string, request: AgentUndoRequest): Promise<AgentUndoResponse> {
+  const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/undo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request)
+  });
+  return parseApiResponse<AgentUndoResponse>(response);
 }

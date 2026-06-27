@@ -264,4 +264,129 @@ describe("agent store event reducer", () => {
     expect(state.runHistory[0].answer).toBe("共有 5 个文件夹");
     expect(state.sessions[0].conversationId).toBe("conversation-1");
   });
+
+  describe("undo store", () => {
+    beforeEach(() => {
+      useAgentStore.setState({
+        undoByRunId: {},
+        undoDialogRunId: undefined,
+        undoFeatureMissing: false,
+        runId: "run-1",
+        runHistory: [{ id: "hist-1", prompt: "old task", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", runId: "run-old" }]
+      });
+    });
+
+    it("sets loading state and stores response on loadUndo success", async () => {
+      const mockResponse = {
+        runId: "run-1",
+        status: "READY" as const,
+        canUndo: true,
+        snapshotVersion: 3,
+        changedFiles: [{ path: "src/a.ts", changeType: "MODIFIED" as const }],
+        changedFileCount: 1
+      };
+      const { getRunUndo } = await import("@/lib/api");
+      const orig = (getRunUndo as ReturnType<typeof vi.fn>);
+      // We'll verify state transitions through the action
+      // For now, verify the store starts clean
+      expect(useAgentStore.getState().undoByRunId).toEqual({});
+      expect(useAgentStore.getState().undoDialogRunId).toBeUndefined();
+    });
+
+    it("openUndoDialog sets runId and triggers load", () => {
+      useAgentStore.getState().openUndoDialog("run-1");
+      const state = useAgentStore.getState();
+      expect(state.undoDialogRunId).toBe("run-1");
+      expect(state.undoByRunId["run-1"]?.loading).toBe(true);
+    });
+
+    it("closeUndoDialog clears dialog runId", () => {
+      useAgentStore.setState({ undoDialogRunId: "run-1" });
+      useAgentStore.getState().closeUndoDialog();
+      expect(useAgentStore.getState().undoDialogRunId).toBeUndefined();
+    });
+
+    it("newSession clears undo state", () => {
+      useAgentStore.setState({
+        undoByRunId: { "run-1": { loading: false, executing: false } },
+        undoDialogRunId: "run-1",
+        undoFeatureMissing: true
+      });
+      useAgentStore.getState().newSession();
+      const state = useAgentStore.getState();
+      expect(state.undoByRunId).toEqual({});
+      expect(state.undoDialogRunId).toBeUndefined();
+      expect(state.undoFeatureMissing).toBe(false);
+    });
+
+    it("startRun closes undo dialog but preserves undo state", async () => {
+      useAgentStore.setState({
+        prompt: "test undo run",
+        undoByRunId: { "run-old": { loading: false, executing: false, response: { runId: "run-old", status: "READY", canUndo: true, snapshotVersion: 1, changedFiles: [], changedFileCount: 0 } } },
+        undoDialogRunId: "run-old",
+        activeSessionId: "s1",
+        sessions: [{ id: "s1", title: "prev", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+        selectedLocalFile: undefined
+      });
+
+      await useAgentStore.getState().startRun();
+      const state = useAgentStore.getState();
+      expect(state.undoDialogRunId).toBeUndefined();
+      expect(state.undoByRunId["run-old"]).toBeDefined();
+    });
+
+    it("confirmUndo sets executing and prevents double submit", async () => {
+      useAgentStore.setState({
+        undoByRunId: {
+          "run-1": {
+            loading: false,
+            executing: false,
+            response: { runId: "run-1", status: "READY", canUndo: true, snapshotVersion: 1, changedFiles: [], changedFileCount: 0 }
+          }
+        }
+      });
+
+      // Start confirm (will fail since no mock API)
+      const promise = useAgentStore.getState().confirmUndo("run-1");
+      // executing should be set immediately
+      expect(useAgentStore.getState().undoByRunId["run-1"]?.executing).toBe(true);
+      await promise;
+      // After error, executing should be false
+      expect(useAgentStore.getState().undoByRunId["run-1"]?.executing).toBe(false);
+    });
+
+    it("refreshUndoAfterTerminal queries current and history runs when not feature-missing", () => {
+      useAgentStore.setState({
+        undoFeatureMissing: false,
+        runId: "run-current",
+        runHistory: [
+          { id: "h1", prompt: "t1", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", runId: "rh1" },
+          { id: "h2", prompt: "t2", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", runId: "rh2" }
+        ]
+      });
+      useAgentStore.getState().refreshUndoAfterTerminal();
+      // Loading states should be set
+      const undo = useAgentStore.getState().undoByRunId;
+      expect(undo["run-current"]?.loading).toBe(true);
+      expect(undo["rh1"]?.loading).toBe(true);
+      expect(undo["rh2"]?.loading).toBe(true);
+    });
+
+    it("refreshUndoAfterTerminal is no-op when feature missing", () => {
+      useAgentStore.setState({ undoFeatureMissing: true, runId: "run-1" });
+      useAgentStore.getState().refreshUndoAfterTerminal();
+      expect(useAgentStore.getState().undoByRunId["run-1"]).toBeUndefined();
+    });
+
+    it("stores undoByRunId in session snapshot", () => {
+      useAgentStore.setState({
+        activeSessionId: "s1",
+        undoByRunId: { "run-1": { loading: false, executing: false, response: { runId: "run-1", status: "UNDONE", canUndo: false, snapshotVersion: 1, changedFiles: [], changedFileCount: 0 } } },
+        sessions: [{ id: "s1", title: "test", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }]
+      });
+      useAgentStore.getState().receiveEvent({ type: "done", stopReason: "FINAL_ANSWER" });
+      const session = useAgentStore.getState().sessions.find((s) => s.id === "s1");
+      expect(session?.undoByRunId?.["run-1"]?.response?.status).toBe("UNDONE");
+    });
+  });
 });

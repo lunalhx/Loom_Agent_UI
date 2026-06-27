@@ -1,10 +1,11 @@
-import { AlertTriangle, CheckCircle2, FileDiff } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileDiff, Loader2, Undo2 } from "lucide-react";
 import { useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
-import type { RunHistoryItem, StepState } from "@/store/agentStore";
+import type { RunHistoryItem, StepState, UndoViewState } from "@/store/agentStore";
 import type { AgentStreamEvent } from "@/types/backend";
 import { AnswerMarkdown } from "./AnswerMarkdown";
 import { DiffApprovalCard } from "./DiffApprovalCard";
+import { UndoConfirmDialog } from "./UndoConfirmDialog";
 
 const emptyPrompts = [
   { icon: "⌕", tone: "blue", label: "解释这个项目的整体架构和模块职责", prompt: "解释这个项目的整体架构和模块职责" },
@@ -168,13 +169,26 @@ function FinalAnswerCard({
   content,
   elapsedMs,
   iterationCount,
-  toolCallCount
+  toolCallCount,
+  runId,
+  undoViewState
 }: {
   content: string;
   elapsedMs: number;
   iterationCount: number;
   toolCallCount: number;
+  runId?: string;
+  undoViewState?: UndoViewState;
 }) {
+  const openUndoDialog = useAgentStore((state) => state.openUndoDialog);
+  const undoFeatureMissing = useAgentStore((state) => state.undoFeatureMissing);
+  const undoResponse = undoViewState?.response;
+  const undoReady = undoResponse?.status === "READY" && undoResponse.canUndo;
+  const undoExecuting = undoViewState?.executing;
+  const undoDone = undoResponse?.status === "UNDONE";
+  const undoOpen = undoResponse?.status === "OPEN";
+  const showUndo = runId && !undoFeatureMissing;
+
   return (
     <div className="flex justify-start">
       <div className="relative w-full max-w-[920px] overflow-hidden rounded-[18px] border border-primary/25 bg-[linear-gradient(180deg,rgba(243,160,76,.075),rgba(243,160,76,.018))] p-5 shadow-insetline">
@@ -182,14 +196,41 @@ function FinalAnswerCard({
         <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold text-primary">
           <CheckCircle2 size={15} />
           最终回答
+          {undoDone ? (
+            <span className="ml-auto rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-medium text-emerald-400">
+              修改已撤销
+            </span>
+          ) : null}
         </div>
         <div className="text-[15px] leading-7 text-foreground">
           <AnswerMarkdown content={content} />
         </div>
-        <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-white/[0.075] pt-3 font-mono text-[10.5px] text-white/34">
+        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-white/[0.075] pt-3 font-mono text-[10.5px] text-white/34">
           <span>耗时 {elapsedMs ? `${(elapsedMs / 1000).toFixed(1)}s` : "—"}</span>
           <span>{iterationCount} 次迭代</span>
           <span>{toolCallCount} 次工具调用</span>
+          {showUndo ? (
+            undoExecuting ? (
+              <span className="ml-auto inline-flex items-center gap-1.5 text-primary/70">
+                <Loader2 size={12} className="animate-spin" />
+                正在撤销
+              </span>
+            ) : undoOpen ? (
+              <span className="ml-auto inline-flex items-center gap-1.5 text-white/30">
+                <Loader2 size={12} className="animate-spin" />
+                正在生成撤销点
+              </span>
+            ) : undoReady ? (
+              <button
+                type="button"
+                className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-[#d97742]/40 bg-[#d97742]/15 px-2.5 py-1 text-[11px] font-medium text-[#e09560] transition hover:border-[#d97742]/60 hover:bg-[#d97742]/25"
+                onClick={() => runId && openUndoDialog(runId)}
+              >
+                <Undo2 size={12} />
+                撤销本轮修改
+              </button>
+            ) : null
+          ) : null}
         </div>
       </div>
     </div>
@@ -216,6 +257,8 @@ function HistoryRun({ run }: { run: RunHistoryItem }) {
   const elapsedMs = events.reduce((max, entry) => Math.max(max, entry.event.elapsedMs || 0), 0);
   const iterationCount = steps.length || 1;
   const toolCallCount = events.filter((entry) => entry.event.type === "tool_call").length;
+  const undoByRunId = useAgentStore((state) => state.undoByRunId);
+  const undoViewState = run.runId ? undoByRunId[run.runId] : undefined;
 
   return (
     <>
@@ -227,6 +270,8 @@ function HistoryRun({ run }: { run: RunHistoryItem }) {
           elapsedMs={elapsedMs}
           iterationCount={iterationCount}
           toolCallCount={toolCallCount}
+          runId={run.runId}
+          undoViewState={undoViewState}
         />
       ) : null}
       {run.error ? <RunErrorCard error={run.error} /> : null}
@@ -277,6 +322,8 @@ export function Flow() {
   const events = useAgentStore((state) => state.events);
   const trace = useAgentStore((state) => state.trace);
   const runHistory = useAgentStore((state) => state.runHistory);
+  const undoByRunId = useAgentStore((state) => state.undoByRunId);
+  const runId = useAgentStore((state) => state.runId);
   const approvalList = Object.values(approvals).filter((approval) => ["pending", "approving", "rejecting"].includes(approval.status));
   const activeRun = status !== "IDLE";
   const hasRunContent = activeRun || steps.length > 0 || approvalList.length > 0 || Boolean(answer) || Boolean(error);
@@ -306,13 +353,15 @@ export function Flow() {
           <EventMarker key={id} event={event} />
         ))}
 
-        {answer ? <FinalAnswerCard content={answer} elapsedMs={elapsedMs} iterationCount={iterationCount} toolCallCount={toolCallCount} /> : null}
+        {answer ? <FinalAnswerCard content={answer} elapsedMs={elapsedMs} iterationCount={iterationCount} toolCallCount={toolCallCount} runId={runId} undoViewState={runId ? undoByRunId[runId] : undefined} /> : null}
 
         {error ? <RunErrorCard error={error} /> : null}
 
         {approvalList.map((approval) => (
           <DiffApprovalCard key={approval.approvalId} approval={approval} />
         ))}
+
+        <UndoConfirmDialog />
       </div>
     </main>
   );
