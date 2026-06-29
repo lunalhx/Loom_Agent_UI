@@ -187,6 +187,7 @@ function FinalAnswerCard({
   const undoExecuting = undoViewState?.executing;
   const undoDone = undoResponse?.status === "UNDONE";
   const undoOpen = undoResponse?.status === "OPEN";
+  const undoSuspended = undoResponse?.status === "SUSPENDED";
   const showUndo = runId && !undoFeatureMissing;
 
   return (
@@ -219,6 +220,11 @@ function FinalAnswerCard({
               <span className="ml-auto inline-flex items-center gap-1.5 text-white/30">
                 <Loader2 size={12} className="animate-spin" />
                 正在生成撤销点
+              </span>
+            ) : undoSuspended ? (
+              <span className="ml-auto inline-flex items-center gap-1.5 text-amber-400/60">
+                <Loader2 size={12} className="animate-spin" />
+                等待中
               </span>
             ) : undoReady ? (
               <button

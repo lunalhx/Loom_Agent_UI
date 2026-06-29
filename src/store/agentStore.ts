@@ -392,6 +392,8 @@ function mergeTreeNode(
 
 const undoErrorLabels: Record<string, string> = {
   workspace_changed_after_run: "文件在任务结束后又被修改，未执行撤销",
+  workspace_changed_while_suspended: "暂停期间工作区被修改，撤销不可用",
+  workspace_undo_busy: "另一个 run 正占用工作区，请稍后重试",
   undo_not_latest: "必须先处理更新的一轮修改",
   git_head_changed: "当前分支或 HEAD 已变化，不能安全撤销",
   undo_already_applied: "本轮修改已经撤销",
@@ -407,16 +409,16 @@ function pollUndoUntilReady(runId: string) {
 
   const tryPoll = () => {
     const current = useAgentStore.getState().undoByRunId[runId];
-    if (current?.response?.status !== "OPEN" && current?.response?.status !== undefined) return;
+    if (current?.response?.status !== "OPEN" && current?.response?.status !== "SUSPENDED" && current?.response?.status !== undefined) return;
     if (attempts >= delays.length) return;
 
     setTimeout(() => {
       const latest = useAgentStore.getState().undoByRunId[runId];
-      if (latest?.response?.status !== "OPEN") return;
+      if (latest?.response?.status !== "OPEN" && latest?.response?.status !== "SUSPENDED") return;
       attempts++;
       void useAgentStore.getState().loadUndo(runId).then(() => {
         const after = useAgentStore.getState().undoByRunId[runId];
-        if (after?.response?.status === "OPEN" && attempts < delays.length) {
+        if ((after?.response?.status === "OPEN" || after?.response?.status === "SUSPENDED") && attempts < delays.length) {
           tryPoll();
         }
       });
@@ -1119,7 +1121,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       set((state) => ({
         undoByRunId: { ...state.undoByRunId, [runId]: { loading: false, executing: false, response } }
       }));
-      if (response.status === "OPEN") {
+      if (response.status === "OPEN" || response.status === "SUSPENDED") {
         pollUndoUntilReady(runId);
       }
     } catch (error) {

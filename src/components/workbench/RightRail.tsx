@@ -105,6 +105,8 @@ function undoStatusBadge(status: string) {
   switch (status) {
     case "OPEN":
       return { label: "生成撤销点", color: "text-white/40 bg-white/[0.05]" };
+    case "SUSPENDED":
+      return { label: "等待中", color: "text-amber-400 bg-amber-400/10" };
     case "READY":
       return { label: "可撤销", color: "text-emerald-400 bg-emerald-400/10" };
     case "NO_CHANGES":
@@ -285,6 +287,11 @@ function ChangesPanel({ viewState, runId }: { viewState?: UndoViewState; runId?:
           <div className="flex items-center justify-center gap-2 rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-[12px] text-white/30">
             <Loader2 size={14} className="animate-spin" />
             正在生成撤销点
+          </div>
+        ) : response.status === "SUSPENDED" ? (
+          <div className="flex items-center justify-center gap-2 rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-[12px] text-amber-400/60">
+            <Loader2 size={14} className="animate-spin" />
+            等待审批或用户输入
           </div>
         ) : response.status === "NO_CHANGES" ? (
           <div className="rounded-[10px] border border-dashed border-white/[0.08] px-4 py-2.5 text-center text-[11.5px] text-white/30">

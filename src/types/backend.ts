@@ -318,6 +318,7 @@ export type ApprovalDecisionResponse = {
 
 export type UndoStatus =
   | "OPEN"
+  | "SUSPENDED"
   | "READY"
   | "NO_CHANGES"
   | "UNAVAILABLE"
