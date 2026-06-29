@@ -283,6 +283,24 @@
   }
 }
 
+.diff-line-added {
+  background-color: rgba(16, 185, 129, 0.14);
+  color: rgb(167, 243, 208);
+}
+
+.diff-line-removed {
+  background-color: rgba(239, 68, 68, 0.16);
+  color: rgb(252, 165, 165);
+}
+
+.diff-line-context {
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.diff-symbol {
+  color: rgba(255, 255, 255, 0.32);
+}
+
 @keyframes loom-warp-breathe {
   0%,
   100% {

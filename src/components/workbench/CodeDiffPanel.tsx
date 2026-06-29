@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Columns2, Rows3 } from "lucide-react";
 import { basename, cn, diffLineStats } from "@/lib/utils";
-import type { DiffHunk, DiffPayload, InlineDiffPart, StructuredDiffLine } from "@/types/backend";
+import type { DiffHunk, DiffPayload, StructuredDiffLine } from "@/types/backend";
 
 type ViewMode = "unified" | "split";
 
@@ -87,11 +87,8 @@ function attachInlineDiff(lines: StructuredDiffLine[]) {
       const removedLine = removedBlock[offset];
       const addedLine = addedBlock[offset];
       if (similarity(removedLine.text ?? "", addedLine.text ?? "") >= 0.5) {
-        const inlineDiff = buildInlineDiff(removedLine.text ?? "", addedLine.text ?? "");
         removedLine.pairId = pairId;
-        removedLine.inlineDiff = inlineDiff;
         addedLine.pairId = pairId;
-        addedLine.inlineDiff = inlineDiff;
         pairId += 1;
         modified += 1;
       }
@@ -115,44 +112,6 @@ function similarity(left: string, right: string) {
     previous.splice(0, previous.length, ...current);
   }
   return 1 - previous[right.length] / maxLength;
-}
-
-function buildInlineDiff(oldText: string, newText: string): InlineDiffPart[] {
-  const lcs = Array.from({ length: oldText.length + 1 }, () => Array(newText.length + 1).fill(0));
-  for (let i = oldText.length - 1; i >= 0; i -= 1) {
-    for (let j = newText.length - 1; j >= 0; j -= 1) {
-      lcs[i][j] = oldText[i] === newText[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
-    }
-  }
-
-  const parts: InlineDiffPart[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < oldText.length && j < newText.length) {
-    if (oldText[i] === newText[j]) {
-      pushInlinePart(parts, "unchanged", oldText[i]);
-      i += 1;
-      j += 1;
-    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
-      pushInlinePart(parts, "removed", oldText[i]);
-      i += 1;
-    } else {
-      pushInlinePart(parts, "added", newText[j]);
-      j += 1;
-    }
-  }
-  while (i < oldText.length) pushInlinePart(parts, "removed", oldText[i]), (i += 1);
-  while (j < newText.length) pushInlinePart(parts, "added", newText[j]), (j += 1);
-  return parts;
-}
-
-function pushInlinePart(parts: InlineDiffPart[], type: InlineDiffPart["type"], text: string) {
-  const previous = parts[parts.length - 1];
-  if (previous?.type === type) {
-    previous.text += text;
-  } else {
-    parts.push({ type, text });
-  }
 }
 
 function clipContext(lines: StructuredDiffLine[], radius: number) {
@@ -244,32 +203,15 @@ function toSideRows(lines: StructuredDiffLine[]): SideRow[] {
 
 function lineTone(type?: StructuredDiffLine["type"]) {
   return cn(
-    type === "added" && "bg-emerald-500/12 text-emerald-100",
-    type === "removed" && "bg-red-500/14 text-red-100",
-    type === "context" && "text-white/58"
+    type === "added" && "diff-line-added",
+    type === "removed" && "diff-line-removed",
+    type === "context" && "diff-line-context"
   );
 }
 
-function renderCode(line?: StructuredDiffLine, side?: "old" | "new") {
+function renderCode(line?: StructuredDiffLine) {
   if (!line) return <span>&nbsp;</span>;
-  const text = line.text || " ";
-  if (!line.inlineDiff?.length || line.type === "context") return <span>{text}</span>;
-  const visibleTypes = side === "old" || line.type === "removed" ? new Set(["unchanged", "removed"]) : new Set(["unchanged", "added"]);
-  return (
-    <>
-      {line.inlineDiff.filter((part) => visibleTypes.has(part.type)).map((part, index) => (
-        <span
-          key={`${index}-${part.type}-${part.text}`}
-          className={cn(
-            part.type === "removed" && "rounded-[3px] bg-red-500/40 text-red-50",
-            part.type === "added" && "rounded-[3px] bg-emerald-500/38 text-emerald-50"
-          )}
-        >
-          {part.text}
-        </span>
-      ))}
-    </>
-  );
+  return <span>{line.text || " "}</span>;
 }
 
 function FoldedRow({ count, onExpand }: { count?: number; onExpand: () => void }) {
@@ -287,16 +229,16 @@ function FoldedRow({ count, onExpand }: { count?: number; onExpand: () => void }
 
 function UnifiedView({ lines, onExpand }: { lines: StructuredDiffLine[]; onExpand: () => void }) {
   return (
-    <div className="font-mono text-[12.5px] leading-5">
+    <div className="font-mono text-[12.5px] leading-[1.4]">
       {lines.map((line, index) =>
         line.type === "folded" ? (
           <FoldedRow key={`fold-${index}-${line.foldedCount}`} count={line.foldedCount} onExpand={onExpand} />
         ) : (
-          <div key={`${index}-${line.type}-${line.oldLineNumber}-${line.newLineNumber}`} className={cn("grid min-w-max grid-cols-[52px_52px_28px_minmax(0,1fr)] px-3", lineTone(line.type))}>
-            <span className="select-none text-right text-white/35">{line.oldLineNumber ?? ""}</span>
-            <span className="select-none text-right text-white/35">{line.newLineNumber ?? ""}</span>
-            <span className="select-none text-center text-white/45">{line.type === "added" ? "+" : line.type === "removed" ? "-" : " "}</span>
-            <span className="whitespace-pre-wrap break-words py-0.5">{renderCode(line)}</span>
+          <div key={`${index}-${line.type}-${line.oldLineNumber}-${line.newLineNumber}`} className={cn("flex min-w-full px-2", lineTone(line.type))}>
+            <span className="w-5 shrink-0 select-none text-center diff-symbol">
+              {line.type === "added" ? "+" : line.type === "removed" ? "-" : ""}
+            </span>
+            <span className="whitespace-pre">{line.text || " "}</span>
           </div>
         )
       )}
@@ -308,8 +250,8 @@ function SplitCell({ line, side }: { line?: StructuredDiffLine; side: "old" | "n
   return (
     <div className={cn("grid min-w-0 grid-cols-[52px_28px_minmax(0,1fr)] px-3", lineTone(line?.type))}>
       <span className="select-none text-right text-white/35">{side === "old" ? line?.oldLineNumber ?? "" : line?.newLineNumber ?? ""}</span>
-      <span className="select-none text-center text-white/45">{line?.type === "added" ? "+" : line?.type === "removed" ? "-" : " "}</span>
-      <span className="min-w-0 whitespace-pre-wrap break-words py-0.5">{renderCode(line, side)}</span>
+      <span className="select-none text-center diff-symbol">{line?.type === "added" ? "+" : line?.type === "removed" ? "-" : ""}</span>
+      <span className="min-w-0 whitespace-pre-wrap break-words py-0.5">{renderCode(line)}</span>
     </div>
   );
 }
