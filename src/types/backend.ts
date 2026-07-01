@@ -243,6 +243,7 @@ export type AgentAskRequest = {
   maxSteps?: number;
   includeTrace?: boolean;
   skills?: string[];
+  model?: "deepseek-v4-flash" | "deepseek-v4-pro";
 };
 
 export type AgentApprovalResponse = {

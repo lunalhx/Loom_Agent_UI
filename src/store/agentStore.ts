@@ -1089,7 +1089,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         conversationId: state.conversationId || undefined,
         workspace: state.workspace || undefined,
         includeTrace: true,
-        skills: [...state.selectedSkillNames]
+        skills: [...state.selectedSkillNames],
+        model: state.selectedModel
       };
       const stream = openAgentAskStream(request, {
         onOpen: () => {
