@@ -10,6 +10,8 @@ import type {
   AgentWorkspaceTreeRequest,
   AgentWorkspaceTreeResponse,
   ApiResponse,
+  BackgroundTask,
+  BackgroundTaskDetail,
   ConversationDeletionResponse,
   ConversationSummary,
   ModelConfigResponse,
@@ -231,4 +233,33 @@ export async function getConversationDeletionStatus(conversationId: string): Pro
 export async function listConversations(): Promise<ConversationSummary[]> {
   const response = await fetch(`${API_BASE}/agent/code/conversations`);
   return parseApiResponse<ConversationSummary[]>(response);
+}
+
+export async function fetchBackgroundTasks(runId: string): Promise<BackgroundTask[]> {
+  const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/background-tasks`);
+  return parseApiResponse<BackgroundTask[]>(response);
+}
+
+export async function fetchBackgroundTaskDetail(
+  runId: string,
+  taskId: string,
+  stdoutOffset?: number,
+  stderrOffset?: number,
+  limitBytes?: number
+): Promise<BackgroundTaskDetail> {
+  const params = new URLSearchParams();
+  if (stdoutOffset !== undefined) params.set("stdoutOffset", String(stdoutOffset));
+  if (stderrOffset !== undefined) params.set("stderrOffset", String(stderrOffset));
+  if (limitBytes !== undefined) params.set("limitBytes", String(limitBytes));
+  const qs = params.toString();
+  const url = `${API_BASE}/agent/code/runs/${runId}/background-tasks/${taskId}${qs ? `?${qs}` : ""}`;
+  const response = await fetch(url);
+  return parseApiResponse<BackgroundTaskDetail>(response);
+}
+
+export async function cancelBackgroundTask(runId: string, taskId: string): Promise<boolean> {
+  const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/background-tasks/${taskId}/cancel`, {
+    method: "POST"
+  });
+  return parseApiResponse<boolean>(response);
 }

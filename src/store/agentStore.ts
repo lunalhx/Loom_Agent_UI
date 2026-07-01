@@ -12,6 +12,9 @@ import {
   deleteConversation,
   getConversationDeletionStatus,
   listConversations,
+  fetchBackgroundTasks,
+  fetchBackgroundTaskDetail,
+  cancelBackgroundTask,
   ApiRequestError,
   FeatureMissingError,
   type StreamHandle
@@ -26,6 +29,9 @@ import type {
   AgentTool,
   AgentUndoResponse,
   AgentWorkspaceTreeNode,
+  BackgroundTask,
+  BackgroundTaskDetail,
+  BackgroundTaskStatus,
   ConversationDeletionResponse,
   ConversationDeletionStatus,
   ModelConfigResponse,
@@ -115,6 +121,7 @@ export type Session = {
   undoByRunId?: Record<string, UndoViewState>;
   deletionStatus?: ConversationDeletionStatus;
   deletionError?: string;
+  backgroundTasks?: BackgroundTaskState[];
 };
 
 export type LocalFileTarget = {
@@ -139,6 +146,15 @@ export type UndoViewState = {
   response?: AgentUndoResponse;
   errorCode?: string;
   error?: string;
+};
+
+export type BackgroundTaskState = BackgroundTask & {
+  stdoutChunks: string[];
+  stderrChunks: string[];
+  stdoutOffset: number;
+  stderrOffset: number;
+  stdoutEof: boolean;
+  stderrEof: boolean;
 };
 
 const defaultModels = ["deepseek-v4-flash", "deepseek-v4-pro"];
@@ -201,6 +217,9 @@ type AgentState = {
   undoByRunId: Record<string, UndoViewState>;
   undoDialogRunId?: string;
   undoFeatureMissing: boolean;
+  backgroundTasks: BackgroundTaskState[];
+  backgroundTasksLoading: boolean;
+  selectedBackgroundTaskId?: string;
   availableSkills: SkillSummary[];
   selectedSkillNames: string[];
   skillsLoading: boolean;
@@ -233,6 +252,10 @@ type AgentState = {
   closeUndoDialog: () => void;
   confirmUndo: (runId: string) => Promise<void>;
   refreshUndoAfterTerminal: () => void;
+  fetchBackgroundTasks: (runId: string) => Promise<void>;
+  fetchTaskDetail: (runId: string, taskId: string) => Promise<void>;
+  cancelBackgroundTask: (runId: string, taskId: string) => Promise<void>;
+  selectBackgroundTask: (taskId?: string) => void;
 };
 
 const sessionStorageKey = "loom-agent:sessions";
@@ -281,7 +304,12 @@ function snapshotSession(state: AgentState, patch: Partial<AgentState> = {}): Se
     answer,
     error,
     runHistory: patch.runHistory ?? state.runHistory,
-    undoByRunId: patch.undoByRunId ?? state.undoByRunId
+    undoByRunId: patch.undoByRunId ?? state.undoByRunId,
+    backgroundTasks: (patch.backgroundTasks ?? state.backgroundTasks).map((t) => ({
+      ...t,
+      stdoutChunks: [],
+      stderrChunks: []
+    }))
   };
 }
 
@@ -316,7 +344,8 @@ function sessionViewState(state: AgentState, session: Session): AgentState {
     approvals: session.approvals || {},
     recentFiles: session.recentFiles || [],
     runHistory: session.runHistory || [],
-    undoByRunId: session.undoByRunId || {}
+    undoByRunId: session.undoByRunId || {},
+    backgroundTasks: session.backgroundTasks || []
   };
 }
 
@@ -618,6 +647,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   sessions: typeof localStorage === "undefined" ? [] : readSessions(),
   undoByRunId: {},
   undoFeatureMissing: false,
+  backgroundTasks: [],
+  backgroundTasksLoading: false,
+  selectedBackgroundTaskId: undefined,
   availableSkills: [],
   selectedSkillNames: [],
   skillsLoading: false,
@@ -667,7 +699,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         selectedLocalFolder: undefined,
         undoByRunId: {},
         undoDialogRunId: undefined,
-        undoFeatureMissing: false
+        undoFeatureMissing: false,
+        backgroundTasks: [],
+        backgroundTasksLoading: false,
+        selectedBackgroundTaskId: undefined
       };
     }),
   selectSession: (sessionId) =>
@@ -693,6 +728,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       setTimeout(() => {
         void useAgentStore.getState().loadUndoStack(idsToQuery);
       }, 0);
+      if (currentRunId) {
+        setTimeout(() => {
+          void useAgentStore.getState().fetchBackgroundTasks(currentRunId);
+        }, 0);
+      }
       return {
         activeSessionId: restoredSession.id,
         runId: restoredSession.runId,
@@ -725,7 +765,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         recentFiles: restoredSession.recentFiles || [],
         runHistory: restoredSession.runHistory || [],
         undoByRunId: sanitizedUndo,
-        undoFeatureMissing: false
+        undoFeatureMissing: false,
+        backgroundTasks: restoredSession.backgroundTasks || [],
+        backgroundTasksLoading: false,
+        selectedBackgroundTaskId: undefined
       };
     }),
   deleteSession: (sessionId) => {
@@ -1077,6 +1120,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       recentFiles: [],
       runHistory,
       undoDialogRunId: undefined,
+      backgroundTasks: [],
+      backgroundTasksLoading: false,
+      selectedBackgroundTaskId: undefined,
       streams: state.activeSessionId
         ? withoutSessionStream(state.streams, state.activeSessionId)
         : state.streams
@@ -1101,6 +1147,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             status: "RUNNING",
             statusMessage: "connected"
           }));
+          const runId = get().runId;
+          if (runId) void get().fetchBackgroundTasks(runId);
         },
         onEvent: (event) => {
           const current = get();
@@ -1206,6 +1254,82 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             iteration: eventIteration(event, trace)
           }
         ];
+      }
+
+      // Background task events
+      if (
+        event.type === "background_task_started" ||
+        event.type === "background_task_completed" ||
+        event.type === "background_task_failed" ||
+        event.type === "background_task_cancelled"
+      ) {
+        const bt = event.backgroundTask;
+        if (bt) {
+          const statusMap: Record<string, BackgroundTaskStatus> = {
+            background_task_started: "RUNNING",
+            background_task_completed: "SUCCEEDED",
+            background_task_failed: "FAILED",
+            background_task_cancelled: "CANCELLED"
+          };
+          const newStatus = statusMap[event.type] || bt.status;
+          const existing = eventState.backgroundTasks.find((t) => t.taskId === bt.taskId);
+          const upserted: BackgroundTaskState = {
+            ...(existing || {
+              stdoutChunks: [],
+              stderrChunks: [],
+              stdoutOffset: 0,
+              stderrOffset: 0,
+              stdoutEof: false,
+              stderrEof: false
+            }),
+            ...bt,
+            status: newStatus
+          };
+          const backgroundTasks = existing
+            ? eventState.backgroundTasks.map((t) => (t.taskId === bt.taskId ? upserted : t))
+            : [...eventState.backgroundTasks, upserted];
+
+          const traceLabels: Record<string, string> = {
+            background_task_started: `task launched · ${bt.command}`,
+            background_task_completed: `task completed · ${bt.command}`,
+            background_task_failed: `task failed · ${bt.command}`,
+            background_task_cancelled: `task cancelled · ${bt.command}`
+          };
+          trace = [
+            ...trace,
+            {
+              id: crypto.randomUUID(),
+              label: traceLabels[event.type] || event.type,
+              detail: bt.command,
+              time,
+              type: "meta",
+              iteration: eventIteration(event, trace)
+            }
+          ];
+
+          // Update nextState to include backgroundTasks
+          const nextStateWithBg = {
+            events,
+            steps,
+            plan,
+            planTriggered,
+            trace,
+            approvals,
+            recentFiles,
+            status: nextStatus,
+            answer,
+            error,
+            runId,
+            requestId,
+            conversationId,
+            workspace,
+            backgroundTasks
+          };
+          const sessions = upsertSessionSnapshot(state.sessions, snapshotSession(eventState, nextStateWithBg));
+          return targetSessionId && targetSessionId !== state.activeSessionId
+            ? { sessions }
+            : { ...nextStateWithBg, sessions };
+        }
       }
 
       if (
@@ -1670,6 +1794,87 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const runHistoryIds = state.runHistory.map((r) => r.runId).filter(Boolean) as string[];
     const ids = currentRunId ? [currentRunId, ...runHistoryIds] : runHistoryIds;
     void get().loadUndoStack(ids);
+  },
+
+  fetchBackgroundTasks: async (runId) => {
+    if (!runId) return;
+    set({ backgroundTasksLoading: true });
+    try {
+      const tasks = await fetchBackgroundTasks(runId);
+      set((state) => {
+        const backgroundTasks: BackgroundTaskState[] = tasks.map((t) => {
+          const existing = state.backgroundTasks.find((et) => et.taskId === t.taskId);
+          return {
+            stdoutChunks: existing?.stdoutChunks || [],
+            stderrChunks: existing?.stderrChunks || [],
+            stdoutOffset: existing?.stdoutOffset || 0,
+            stderrOffset: existing?.stderrOffset || 0,
+            stdoutEof: existing?.stdoutEof || false,
+            stderrEof: existing?.stderrEof || false,
+            ...t
+          };
+        });
+        return { backgroundTasks, backgroundTasksLoading: false };
+      });
+    } catch {
+      set({ backgroundTasksLoading: false });
+    }
+  },
+
+  fetchTaskDetail: async (runId, taskId) => {
+    if (!runId) return;
+    const state = get();
+    const existing = state.backgroundTasks.find((t) => t.taskId === taskId);
+    try {
+      const detail = await fetchBackgroundTaskDetail(
+        runId,
+        taskId,
+        existing?.stdoutOffset,
+        existing?.stderrOffset
+      );
+      set((state) => ({
+        backgroundTasks: state.backgroundTasks.map((t) => {
+          if (t.taskId !== taskId) return t;
+          return {
+            ...t,
+            ...detail,
+            stdoutChunks: detail.stdoutChunk
+              ? [...t.stdoutChunks, detail.stdoutChunk]
+              : t.stdoutChunks,
+            stderrChunks: detail.stderrChunk
+              ? [...t.stderrChunks, detail.stderrChunk]
+              : t.stderrChunks,
+            stdoutOffset: detail.stdoutOffset,
+            stderrOffset: detail.stderrOffset,
+            stdoutEof: detail.stdoutEof,
+            stderrEof: detail.stderrEof
+          };
+        })
+      }));
+    } catch {
+      // silent fail for manual refresh
+    }
+  },
+
+  cancelBackgroundTask: async (runId, taskId) => {
+    if (!runId) return;
+    // Optimistic update
+    set((state) => ({
+      backgroundTasks: state.backgroundTasks.map((t) =>
+        t.taskId === taskId ? { ...t, status: "CANCELLED" as const } : t
+      )
+    }));
+    try {
+      await cancelBackgroundTask(runId, taskId);
+    } catch {
+      // SSE event will confirm the actual status
+    }
+  },
+
+  selectBackgroundTask: (taskId) => {
+    set((state) => ({
+      selectedBackgroundTaskId: state.selectedBackgroundTaskId === taskId ? undefined : taskId
+    }));
   }
 }));
 

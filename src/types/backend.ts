@@ -88,7 +88,11 @@ export type AgentEventType =
   | "observation"
   | "answer"
   | "done"
-  | "error";
+  | "error"
+  | "background_task_started"
+  | "background_task_completed"
+  | "background_task_failed"
+  | "background_task_cancelled";
 
 export type StopReason =
   | "FINAL_ANSWER"
@@ -184,6 +188,41 @@ export type AgentEventMetadata = {
   [key: string]: unknown;
 };
 
+export type BackgroundTaskStatus =
+  | "STARTING"
+  | "RUNNING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "TIMED_OUT"
+  | "CANCELLED"
+  | "LOST";
+
+export type BackgroundTask = {
+  taskId: string;
+  runId: string;
+  command: string;
+  cwd: string;
+  status: BackgroundTaskStatus;
+  exitCode?: number;
+  errorCode?: string;
+  errorMessage?: string;
+  stdoutBytes: number;
+  stderrBytes: number;
+  launchMode: string;
+  timeoutMs?: number;
+  startedAt?: string;
+  completedAt?: string;
+};
+
+export type BackgroundTaskDetail = BackgroundTask & {
+  stdoutChunk?: string;
+  stderrChunk?: string;
+  stdoutOffset: number;
+  stderrOffset: number;
+  stdoutEof: boolean;
+  stderrEof: boolean;
+};
+
 export type AgentStreamEvent = {
   type: AgentEventType;
   /**
@@ -233,6 +272,7 @@ export type AgentStreamEvent = {
    * OLD_NEW uses oldText/newText; UNIFIED uses unifiedDiff.
   */
   diff?: DiffPayload;
+  backgroundTask?: BackgroundTask;
 };
 
 export type AgentAskRequest = {

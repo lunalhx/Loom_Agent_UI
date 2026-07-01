@@ -1,7 +1,7 @@
-import { Check, ChevronDown, Clock3, Loader2, MoveRight, RotateCcw, Undo2 } from "lucide-react";
+import { Check, ChevronDown, Clock3, Loader2, MoveRight, RefreshCw, RotateCcw, Undo2, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import { cn } from "@/lib/utils";
-import { useAgentStore, type PlanItem, type TraceItem, type UndoViewState } from "@/store/agentStore";
+import { cn, formatBytes, backgroundTaskStatusLabel } from "@/lib/utils";
+import { useAgentStore, type BackgroundTaskState, type PlanItem, type TraceItem, type UndoViewState } from "@/store/agentStore";
 import type { UndoChangedFile } from "@/types/backend";
 
 function PlanIcon({ status }: { status: PlanItem["status"] }) {
@@ -91,7 +91,7 @@ function TraceGroup({ iteration, items }: { iteration: number; items: TraceItem[
   );
 }
 
-type RightTab = "trace" | "changes";
+type RightTab = "trace" | "changes" | "tasks";
 
 const changeTypeTag: Record<string, { label: string; color: string }> = {
   ADDED: { label: "A", color: "text-emerald-400" },
@@ -316,12 +316,187 @@ function ChangesPanel({ viewState, runId }: { viewState?: UndoViewState; runId?:
   );
 }
 
+function taskStatusDot(status: string) {
+  if (status === "STARTING" || status === "RUNNING") return "bg-amber-400 animate-pulse";
+  if (status === "SUCCEEDED") return "bg-emerald-400";
+  if (status === "FAILED" || status === "TIMED_OUT") return "bg-red-400";
+  if (status === "CANCELLED") return "bg-white/25";
+  return "bg-white/15";
+}
+
+function BackgroundTaskDetail({ task, runId }: { task: BackgroundTaskState; runId?: string }) {
+  const fetchTaskDetail = useAgentStore((state) => state.fetchTaskDetail);
+  const [tab, setTab] = useState<"stdout" | "stderr">("stdout");
+  const isRunning = task.status === "STARTING" || task.status === "RUNNING";
+
+  return (
+    <div className="mt-2 rounded-[10px] border border-white/[0.08] bg-white/[0.015] overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-white/[0.06]">
+        {isRunning ? <Loader2 size={12} className="animate-spin text-white/45" /> : null}
+        <span className="font-mono text-[11px] text-white/55 truncate">{task.command}</span>
+        {runId ? (
+          <button
+            type="button"
+            className="ml-auto rounded p-1 text-white/30 hover:text-white/60 transition"
+            title="刷新输出"
+            onClick={() => void fetchTaskDetail(runId, task.taskId)}
+          >
+            <RefreshCw size={12} />
+          </button>
+        ) : null}
+      </div>
+      <div className="flex border-b border-white/[0.05]">
+        <button
+          type="button"
+          className={cn(
+            "flex-1 py-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] transition",
+            tab === "stdout" ? "bg-white/[0.04] text-white/55" : "text-white/25 hover:text-white/40"
+          )}
+          onClick={() => setTab("stdout")}
+        >
+          stdout
+        </button>
+        <button
+          type="button"
+          className={cn(
+            "flex-1 py-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] transition",
+            tab === "stderr" ? "bg-white/[0.04] text-white/55" : "text-white/25 hover:text-white/40"
+          )}
+          onClick={() => setTab("stderr")}
+        >
+          stderr
+        </button>
+      </div>
+      <pre className="max-h-[300px] overflow-auto p-3 font-mono text-[10px] leading-relaxed text-white/50 whitespace-pre-wrap break-all">
+        {(tab === "stdout" ? task.stdoutChunks : task.stderrChunks).join("") || (
+          <span className="text-white/20">暂无输出</span>
+        )}
+      </pre>
+      {(tab === "stdout" ? task.stdoutEof : task.stderrEof) ? (
+        <div className="px-3 pb-2 text-[10px] text-white/20">输出已结束</div>
+      ) : isRunning ? (
+        <div className="px-3 pb-2 text-[10px] text-white/25">点击刷新获取最新输出</div>
+      ) : null}
+    </div>
+  );
+}
+
+function BackgroundTaskItem({
+  task,
+  runId,
+  isExpanded,
+  onToggle
+}: {
+  task: BackgroundTaskState;
+  runId?: string;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const cancelTask = useAgentStore((state) => state.cancelBackgroundTask);
+  const fetchTaskDetail = useAgentStore((state) => state.fetchTaskDetail);
+  const isRunning = task.status === "STARTING" || task.status === "RUNNING";
+  const isTerminal = !isRunning && task.status !== "STARTING";
+
+  return (
+    <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.012] transition hover:border-white/[0.1]">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
+        onClick={onToggle}
+      >
+        <span className={cn("h-2 w-2 shrink-0 rounded-full", taskStatusDot(task.status))} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-white/65">{task.command}</span>
+        {isRunning ? (
+          <button
+            type="button"
+            className="rounded p-0.5 text-white/25 hover:text-red-400 transition"
+            title="取消任务"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (runId) void cancelTask(runId, task.taskId);
+            }}
+          >
+            <X size={13} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="rounded p-0.5 text-white/20 hover:text-white/50 transition"
+            title="刷新"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (runId) void fetchTaskDetail(runId, task.taskId);
+            }}
+          >
+            <RefreshCw size={11} />
+          </button>
+        )}
+      </button>
+      <div className="flex items-center gap-3 px-3 pb-2 text-[10px] text-white/30">
+        <span>{backgroundTaskStatusLabel(task.status)}</span>
+        <span>{formatBytes((task.stdoutBytes || 0) + (task.stderrBytes || 0))}</span>
+        {task.exitCode !== undefined ? <span>exit {task.exitCode}</span> : null}
+      </div>
+      {isExpanded ? <BackgroundTaskDetail task={task} runId={runId} /> : null}
+    </div>
+  );
+}
+
+function BackgroundTasksPanel() {
+  const backgroundTasks = useAgentStore((state) => state.backgroundTasks);
+  const backgroundTasksLoading = useAgentStore((state) => state.backgroundTasksLoading);
+  const selectedBackgroundTaskId = useAgentStore((state) => state.selectedBackgroundTaskId);
+  const selectBackgroundTask = useAgentStore((state) => state.selectBackgroundTask);
+  const fetchBackgroundTasks = useAgentStore((state) => state.fetchBackgroundTasks);
+  const runId = useAgentStore((state) => state.runId);
+
+  return (
+    <div className="flex flex-1 flex-col min-h-0 space-y-2">
+      <div className="flex items-center">
+        <button
+          type="button"
+          className="ml-auto rounded p-1 text-white/30 hover:text-white/60 transition"
+          title="刷新任务列表"
+          disabled={backgroundTasksLoading}
+          onClick={() => {
+            if (runId) void fetchBackgroundTasks(runId);
+          }}
+        >
+          <RefreshCw size={13} className={backgroundTasksLoading ? "animate-spin" : ""} />
+        </button>
+      </div>
+      {backgroundTasks.length === 0 ? (
+        <div className="flex min-h-[200px] flex-col items-center justify-center rounded-[14px] border border-dashed border-white/[0.1] bg-white/[0.015] px-4 text-center">
+          <span className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-white/[0.045] text-white/35">
+            <Loader2 size={17} strokeWidth={1.7} />
+          </span>
+          <div className="text-[12px] font-medium text-white/55">暂无后台任务</div>
+          <div className="mt-1.5 text-[10.5px] leading-4 text-white/28">使用 runInBackground 选项执行命令后在此查看</div>
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 space-y-1.5 overflow-auto pr-0.5">
+          {backgroundTasks.map((task) => (
+            <BackgroundTaskItem
+              key={task.taskId}
+              task={task}
+              runId={runId}
+              isExpanded={selectedBackgroundTaskId === task.taskId}
+              onToggle={() => selectBackgroundTask(task.taskId)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RightRail({ open }: { open: boolean }) {
   const plan = useAgentStore((state) => state.plan);
   const planTriggered = useAgentStore((state) => state.planTriggered);
   const trace = useAgentStore((state) => state.trace);
   const runId = useAgentStore((state) => state.runId);
   const undoByRunId = useAgentStore((state) => state.undoByRunId);
+  const backgroundTasks = useAgentStore((state) => state.backgroundTasks);
   const [tab, setTab] = useState<RightTab>("trace");
   const hasPlan = planTriggered && plan.length > 0;
   const completed = plan.filter((item) => item.status === "done" || item.status === "skipped").length;
@@ -413,8 +588,18 @@ export function RightRail({ open }: { open: boolean }) {
             >
               Changes
             </button>
+            <button
+              type="button"
+              className={cn(
+                "rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] transition",
+                tab === "tasks" ? "bg-white/[0.08] text-white/60" : "text-white/30 hover:text-white/45"
+              )}
+              onClick={() => setTab("tasks")}
+            >
+              Tasks
+            </button>
             <span className="ml-auto rounded-full bg-white/[0.055] px-2 py-0.5 text-[10px] text-white/38">
-              {tab === "trace" ? `${traceGroups.length} 轮循环` : "undo"}
+              {tab === "trace" ? `${traceGroups.length} 轮循环` : tab === "changes" ? "undo" : `${backgroundTasks.length} 任务`}
             </span>
           </div>
 
@@ -428,6 +613,8 @@ export function RightRail({ open }: { open: boolean }) {
                 </div>
               )}
             </div>
+          ) : tab === "tasks" ? (
+            <BackgroundTasksPanel />
           ) : (
             <ChangesPanel viewState={undoViewState} runId={runId} />
           )}

@@ -2,7 +2,7 @@ import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { useState } from "react";
 import { AlertTriangle, Check, ChevronDown, FilePenLine, Loader2, TimerReset, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { basename, isWriteTool } from "@/lib/utils";
+import { basename, formatBytes, isWriteTool } from "@/lib/utils";
 import { useAgentStore, type ApprovalState } from "@/store/agentStore";
 import type { DeleteApprovalPreview } from "@/types/backend";
 import { CodeDiffPanel } from "./CodeDiffPanel";
@@ -16,13 +16,6 @@ function secondsUntil(value?: string) {
 function stringInputValue(input: Record<string, unknown> | undefined, key: string) {
   const value = input?.[key];
   return typeof value === "string" ? value : undefined;
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 function DeletePreview({ preview }: { preview: DeleteApprovalPreview }) {

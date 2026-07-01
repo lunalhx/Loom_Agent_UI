@@ -1,4 +1,4 @@
-import { GitBranch, PanelLeft, PanelRight, Wifi } from "lucide-react";
+import { GitBranch, Loader2, PanelLeft, PanelRight, Wifi } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -21,6 +21,11 @@ export function TopBar({
   const workspace = useAgentStore((state) => state.workspace);
   const requestId = useAgentStore((state) => state.requestId);
   const usage = useAgentStore((state) => state.usage);
+  const backgroundTasks = useAgentStore((state) => state.backgroundTasks);
+
+  const activeTaskCount = backgroundTasks.filter(
+    (t) => t.status === "STARTING" || t.status === "RUNNING"
+  ).length;
 
   return (
     <header className="panel-edge flex h-[46px] shrink-0 items-center justify-between border-b px-4">
@@ -48,6 +53,12 @@ export function TopBar({
 
       <div className="flex items-center gap-2">
         <Badge className="hidden md:inline-flex">tokens {usage?.totalTokens ?? "n/a"}</Badge>
+        {activeTaskCount > 0 ? (
+          <Badge className="hidden md:inline-flex gap-1 border-amber-400/30 bg-amber-400/10 text-amber-300">
+            <Loader2 size={11} className="animate-spin" />
+            bg {activeTaskCount}
+          </Badge>
+        ) : null}
         <Badge className="hidden lg:inline-flex">request {shortId(requestId)}</Badge>
         <Badge className="gap-1.5">
           <span className={`h-1.5 w-1.5 rounded-full ${statusColor(status)}`} />

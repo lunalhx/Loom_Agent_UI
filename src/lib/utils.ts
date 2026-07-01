@@ -126,3 +126,23 @@ export function extractUnifiedDiff(text?: string) {
   const diffIndex = source.search(/^diff --git|^---\s/m);
   return diffIndex >= 0 ? source.slice(diffIndex).trim() : undefined;
 }
+
+export function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+export function backgroundTaskStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    STARTING: "starting",
+    RUNNING: "running",
+    SUCCEEDED: "done",
+    FAILED: "failed",
+    TIMED_OUT: "timeout",
+    CANCELLED: "cancelled",
+    LOST: "lost"
+  };
+  return labels[status] || status;
+}
