@@ -11,6 +11,7 @@ import {
   cancelAgentRun,
   deleteConversation,
   getConversationDeletionStatus,
+  listConversations,
   ApiRequestError,
   FeatureMissingError,
   type StreamHandle
@@ -1685,4 +1686,32 @@ if (typeof localStorage !== "undefined") {
       startDeletionPolling(session.id, session.conversationId);
     }
   }
+
+  // Sync: remove sessions whose conversation no longer exists on the server
+  listConversations()
+    .then((summaries) => {
+      const serverIds = new Set(summaries.map((s) => s.conversationId));
+      const current = readSessions();
+      const cleaned = current.filter((s) => {
+        if (!s.conversationId) return true; // local-only, keep
+        if (s.deletionStatus && s.deletionStatus !== "COMPLETED" && s.deletionStatus !== "FAILED") return true; // mid-deletion, keep
+        return serverIds.has(s.conversationId);
+      });
+      if (cleaned.length !== current.length) {
+        writeSessions(cleaned);
+        // If any ghost was the active session, select the first remaining
+        const state = useAgentStore.getState();
+        if (state.activeSessionId && !cleaned.find((s) => s.id === state.activeSessionId)) {
+          useAgentStore.setState({
+            sessions: cleaned,
+            ...(cleaned[0] ? useAgentStore.getState().selectSession(cleaned[0].id) : { activeSessionId: undefined })
+          });
+        } else {
+          useAgentStore.setState({ sessions: cleaned });
+        }
+      }
+    })
+    .catch(() => {
+      // Network unavailable; keep all sessions, will sync next page load
+    });
 }

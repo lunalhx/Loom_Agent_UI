@@ -409,3 +409,12 @@ export type ConversationDeletionResponse = {
   retryCount: number;
   lastError?: string;
 };
+
+// ---- Conversation list types ----
+
+export type ConversationSummary = {
+  conversationId: string;
+  title: string;
+  runCount: number;
+  workspace: string;
+};

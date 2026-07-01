@@ -11,6 +11,7 @@ import type {
   AgentWorkspaceTreeResponse,
   ApiResponse,
   ConversationDeletionResponse,
+  ConversationSummary,
   ModelConfigResponse,
   SkillSummary
 } from "@/types/backend";
@@ -225,4 +226,9 @@ export async function deleteConversation(conversationId: string): Promise<Conver
 export async function getConversationDeletionStatus(conversationId: string): Promise<ConversationDeletionResponse> {
   const response = await fetch(`${API_BASE}/agent/code/conversations/${conversationId}/deletion`);
   return parseApiResponse<ConversationDeletionResponse>(response);
+}
+
+export async function listConversations(): Promise<ConversationSummary[]> {
+  const response = await fetch(`${API_BASE}/agent/code/conversations`);
+  return parseApiResponse<ConversationSummary[]>(response);
 }
