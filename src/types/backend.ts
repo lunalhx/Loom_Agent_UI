@@ -53,6 +53,7 @@ export type AgentTool =
   | "run_shell"
   | "git_op"
   | "activate_skill"
+  | "create_skill"
   | "read_skill_resource"
   | "copy_skill_resource";
 
