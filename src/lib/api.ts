@@ -10,6 +10,7 @@ import type {
   AgentWorkspaceTreeRequest,
   AgentWorkspaceTreeResponse,
   ApiResponse,
+  ConversationDeletionResponse,
   ModelConfigResponse,
   SkillSummary
 } from "@/types/backend";
@@ -206,4 +207,22 @@ export async function cancelAgentRun(runId: string): Promise<boolean> {
     method: "POST"
   });
   return parseApiResponse<boolean>(response);
+}
+
+export async function deleteConversation(conversationId: string): Promise<ConversationDeletionResponse> {
+  const response = await fetch(`${API_BASE}/agent/code/conversations/${conversationId}`, {
+    method: "DELETE"
+  });
+  if (response.status === 404) {
+    throw new ApiRequestError(404, "NOT_FOUND", "会话不存在或已删除");
+  }
+  if (response.status === 400) {
+    throw new ApiRequestError(400, "BAD_REQUEST", "参数非法");
+  }
+  return parseApiResponse<ConversationDeletionResponse>(response);
+}
+
+export async function getConversationDeletionStatus(conversationId: string): Promise<ConversationDeletionResponse> {
+  const response = await fetch(`${API_BASE}/agent/code/conversations/${conversationId}/deletion`);
+  return parseApiResponse<ConversationDeletionResponse>(response);
 }

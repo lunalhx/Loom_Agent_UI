@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, FileCode2, Folder, FolderCheck, FolderTree, History, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, FileCode2, Folder, FolderCheck, FolderTree, History, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -93,6 +93,7 @@ export function Sidebar({ open }: { open: boolean }) {
   const newSession = useAgentStore((state) => state.newSession);
   const selectSession = useAgentStore((state) => state.selectSession);
   const deleteSession = useAgentStore((state) => state.deleteSession);
+  const retryDeleteConversation = useAgentStore((state) => state.retryDeleteConversation);
   const resolveCurrentWorkspace = useAgentStore((state) => state.resolveCurrentWorkspace);
   const loadWorkspaceTree = useAgentStore((state) => state.loadWorkspaceTree);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
@@ -136,7 +137,9 @@ export function Sidebar({ open }: { open: boolean }) {
             <div className="rounded border border-dashed border-border p-3 text-xs text-muted-foreground">No local runs</div>
           ) : (
             sessions.map((session) => {
-              const status = sessionStatus(session.status);
+              const isDeleting = session.deletionStatus && session.deletionStatus !== "COMPLETED";
+              const isFailed = session.deletionStatus === "FAILED";
+              const status = isDeleting ? { label: isFailed ? "删除失败" : "删除中…", dot: isFailed ? "bg-red-400" : "bg-amber-400", pulse: !isFailed } : sessionStatus(session.status);
               return (
               <div
                 key={session.id}
@@ -144,7 +147,7 @@ export function Sidebar({ open }: { open: boolean }) {
                   session.id === activeSessionId
                     ? "border-primary/40 bg-primary/10 text-foreground"
                     : "border-border bg-[#0b0d0f] text-muted-foreground hover:border-primary/25 hover:bg-primary/[0.06] hover:text-foreground"
-                }`}
+                } ${isDeleting ? "pointer-events-none opacity-70" : ""}`}
               >
                 <button
                   type="button"
@@ -152,27 +155,44 @@ export function Sidebar({ open }: { open: boolean }) {
                   title={session.title}
                   aria-current={session.id === activeSessionId ? "true" : undefined}
                   onClick={() => selectSession(session.id)}
+                  disabled={isDeleting}
                 >
                   <div className="truncate">{session.title}</div>
                   <div className="mt-1 flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted-foreground">
-                    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dot} ${status.pulse ? "animate-pulse" : ""}`} />
+                    {isDeleting && !isFailed ? (
+                      <Loader2 size={12} className="shrink-0 animate-spin text-amber-400" />
+                    ) : (
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dot} ${status.pulse ? "animate-pulse" : ""}`} />
+                    )}
                     <span className="shrink-0">{status.label}</span>
                     <span className="truncate text-white/30">{session.workspace || "default"}</span>
                   </div>
                 </button>
-                <button
-                  type="button"
-                  className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded text-white/25 opacity-40 transition hover:bg-red-400/10 hover:text-red-300 hover:opacity-100 focus:opacity-100 focus-ring group-hover:opacity-100"
-                  title={`删除会话：${session.title}`}
-                  aria-label={`删除会话：${session.title}`}
-                  onClick={() => {
-                    if (window.confirm(`确定删除会话“${session.title}”吗？`)) {
-                      deleteSession(session.id);
-                    }
-                  }}
-                >
-                  <Trash2 size={12} />
-                </button>
+                {isFailed ? (
+                  <button
+                    type="button"
+                    className="pointer-events-auto absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded text-amber-400 opacity-80 transition hover:bg-amber-400/10 hover:text-amber-300 hover:opacity-100 focus:opacity-100 focus-ring"
+                    title="重试删除"
+                    aria-label="重试删除"
+                    onClick={() => retryDeleteConversation(session.id)}
+                  >
+                    <RefreshCw size={12} />
+                  </button>
+                ) : !isDeleting ? (
+                  <button
+                    type="button"
+                    className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded text-white/25 opacity-40 transition hover:bg-red-400/10 hover:text-red-300 hover:opacity-100 focus:opacity-100 focus-ring group-hover:opacity-100"
+                    title={`删除会话：${session.title}`}
+                    aria-label={`删除会话：${session.title}`}
+                    onClick={() => {
+                      if (window.confirm(`确定删除会话"${session.title}"吗？`)) {
+                        deleteSession(session.id);
+                      }
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                ) : null}
               </div>
               );
             })

@@ -390,3 +390,21 @@ export type SkillApprovalItem = {
   source: string;
   manifestSha256: string;
 };
+
+// ---- Conversation deletion types ----
+
+export type ConversationDeletionStatus =
+  | "REQUESTED"
+  | "WAITING_FOR_RUNS"
+  | "PURGING"
+  | "COMPLETED"
+  | "FAILED";
+
+export type ConversationDeletionResponse = {
+  conversationId: string;
+  status: ConversationDeletionStatus;
+  requestedAt: string;
+  completedAt?: string;
+  retryCount: number;
+  lastError?: string;
+};

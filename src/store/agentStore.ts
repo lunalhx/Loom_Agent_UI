@@ -9,6 +9,8 @@ import {
   undoRun,
   querySkills,
   cancelAgentRun,
+  deleteConversation,
+  getConversationDeletionStatus,
   ApiRequestError,
   FeatureMissingError,
   type StreamHandle
@@ -23,6 +25,8 @@ import type {
   AgentTool,
   AgentUndoResponse,
   AgentWorkspaceTreeNode,
+  ConversationDeletionResponse,
+  ConversationDeletionStatus,
   ModelConfigResponse,
   RunStatus,
   SkillSummary
@@ -108,6 +112,8 @@ export type Session = {
   error?: string;
   runHistory?: RunHistoryItem[];
   undoByRunId?: Record<string, UndoViewState>;
+  deletionStatus?: ConversationDeletionStatus;
+  deletionError?: string;
 };
 
 export type LocalFileTarget = {
@@ -206,6 +212,7 @@ type AgentState = {
   newSession: () => void;
   selectSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
+  retryDeleteConversation: (sessionId: string) => void;
   setSelectedLocalFile: (file?: File) => void;
   setSelectedLocalFolder: (files?: FileList | File[]) => void;
   resolveCurrentWorkspace: () => Promise<void>;
@@ -523,6 +530,74 @@ function pollUndoUntilReady(runId: string) {
   tryPoll();
 }
 
+// --- Conversation deletion polling ---
+
+const deletionTimers: Record<string, ReturnType<typeof setInterval>> = {};
+
+function stopDeletionPolling(sessionId: string) {
+  const timer = deletionTimers[sessionId];
+  if (timer) {
+    clearInterval(timer);
+    delete deletionTimers[sessionId];
+  }
+}
+
+function startDeletionPolling(sessionId: string, conversationId: string) {
+  stopDeletionPolling(sessionId);
+  const timer = setInterval(() => {
+    const state = useAgentStore.getState();
+    const session = state.sessions.find((s) => s.id === sessionId);
+    if (!session?.deletionStatus || session.deletionStatus === "COMPLETED" || session.deletionStatus === "FAILED") {
+      stopDeletionPolling(sessionId);
+      return;
+    }
+    getConversationDeletionStatus(conversationId)
+      .then((response) => {
+        const current = useAgentStore.getState();
+        const sess = current.sessions.find((s) => s.id === sessionId);
+        if (!sess) {
+          stopDeletionPolling(sessionId);
+          return;
+        }
+        if (response.status === "COMPLETED") {
+          stopDeletionPolling(sessionId);
+          finalizeSessionDeletion(sessionId);
+        } else if (response.status === "FAILED") {
+          stopDeletionPolling(sessionId);
+          useAgentStore.setState({
+            sessions: current.sessions.map((s) =>
+              s.id === sessionId
+                ? { ...s, deletionStatus: "FAILED" as const, deletionError: response.lastError || "删除失败" }
+                : s
+            )
+          });
+          writeSessions(useAgentStore.getState().sessions);
+        } else {
+          // Still in progress, update status
+          useAgentStore.setState({
+            sessions: current.sessions.map((s) =>
+              s.id === sessionId ? { ...s, deletionStatus: response.status } : s
+            )
+          });
+          writeSessions(useAgentStore.getState().sessions);
+        }
+      })
+      .catch(() => {
+        // Network errors are transient; keep polling
+      });
+  }, 1000);
+  deletionTimers[sessionId] = timer;
+}
+
+function finalizeSessionDeletion(sessionId: string) {
+  stopDeletionPolling(sessionId);
+  const state = useAgentStore.getState();
+  const sessions = state.sessions.filter((s) => s.id !== sessionId);
+  const streams = withoutSessionStream(state.streams, sessionId);
+  writeSessions(sessions);
+  useAgentStore.setState({ sessions, streams });
+}
+
 export const useAgentStore = create<AgentState>((set, get) => ({
   allowedModels: defaultModels,
   selectedModel: defaultModels[0],
@@ -598,7 +673,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set((state) => {
       if (sessionId === state.activeSessionId) return {};
       const session = state.sessions.find((item) => item.id === sessionId);
-      if (!session) return {};
+      if (!session || session.deletionStatus) return {};
       const restoredSession = session;
       const restoredUndo = session.undoByRunId || {};
       // Reset stale executing/loading states
@@ -656,18 +731,95 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const state = get();
     const session = state.sessions.find((item) => item.id === sessionId);
     if (!session) return;
-    cancelSessionStream(state, sessionId);
-    const sessions = state.sessions.filter((item) => item.id !== sessionId);
-    const streams = withoutSessionStream(state.streams, sessionId);
+
+    // Close SSE stream without canceling individual runs (backend handles that)
+    const stream = state.streams[sessionId];
+    if (stream) {
+      stream.close();
+      set({ streams: withoutSessionStream(state.streams, sessionId) });
+    }
+
+    // Local-only session without conversationId: remove immediately
+    if (!session.conversationId) {
+      const sessions = state.sessions.filter((item) => item.id !== sessionId);
+      writeSessions(sessions);
+      set({ sessions });
+      if (state.activeSessionId === sessionId) {
+        if (sessions[0]) {
+          get().selectSession(sessions[0].id);
+        } else {
+          get().newSession();
+        }
+      }
+      return;
+    }
+
+    // Server-side conversation: mark as deleting and initiate backend deletion
+    const markDeleting = (s: Session) =>
+      s.id === sessionId ? { ...s, deletionStatus: "REQUESTED" as const, deletionError: undefined } : s;
+    const sessions = state.sessions.map(markDeleting);
     writeSessions(sessions);
-    set({ sessions, streams });
+    set({ sessions });
+
+    // Switch away from deleting session
     if (state.activeSessionId === sessionId) {
-      if (sessions[0]) {
-        get().selectSession(sessions[0].id);
+      const other = sessions.find((s) => s.id !== sessionId && !s.deletionStatus);
+      if (other) {
+        get().selectSession(other.id);
       } else {
         get().newSession();
       }
     }
+
+    // Initiate backend deletion
+    deleteConversation(session.conversationId)
+      .then((response) => {
+        const current = get();
+        const sess = current.sessions.find((s) => s.id === sessionId);
+        if (!sess) return;
+        if (response.status === "COMPLETED") {
+          finalizeSessionDeletion(sessionId);
+        } else {
+          set({
+            sessions: current.sessions.map((s) =>
+              s.id === sessionId ? { ...s, deletionStatus: response.status } : s
+            )
+          });
+          writeSessions(get().sessions);
+          startDeletionPolling(sessionId, session.conversationId!);
+        }
+      })
+      .catch((error) => {
+        const current = get();
+        const sess = current.sessions.find((s) => s.id === sessionId);
+        if (!sess) return;
+        if (error instanceof ApiRequestError && error.httpStatus === 404) {
+          // Server already removed it
+          finalizeSessionDeletion(sessionId);
+        } else {
+          const message = error instanceof Error ? error.message : "删除失败";
+          set({
+            sessions: current.sessions.map((s) =>
+              s.id === sessionId ? { ...s, deletionStatus: "FAILED" as const, deletionError: message } : s
+            )
+          });
+          writeSessions(get().sessions);
+        }
+      });
+  },
+
+  retryDeleteConversation: (sessionId) => {
+    const state = get();
+    const session = state.sessions.find((s) => s.id === sessionId);
+    if (!session?.conversationId) return;
+    // Reset deletion state and re-trigger
+    set({
+      sessions: state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, deletionStatus: undefined, deletionError: undefined } : s
+      )
+    });
+    writeSessions(get().sessions);
+    get().deleteSession(sessionId);
   },
   setWorkspace: (workspace) =>
     set({
@@ -868,9 +1020,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return;
     }
 
+    // Block runs on sessions being deleted
+    const activeSession = state.activeSessionId ? state.sessions.find((item) => item.id === state.activeSessionId) : undefined;
+    if (activeSession?.deletionStatus) {
+      set({ status: "ERROR", error: "该会话正在删除中，无法发送消息" });
+      return;
+    }
+
     cancelSessionStream(state, state.activeSessionId);
     const createdAt = new Date().toISOString();
-    const activeSession = state.activeSessionId ? state.sessions.find((item) => item.id === state.activeSessionId) : undefined;
     const previousRun = snapshotCurrentRun(state);
     const runHistory = previousRun ? [...state.runHistory, previousRun] : state.runHistory;
     const session: Session = {
@@ -1512,3 +1670,18 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     void get().loadUndoStack(ids);
   }
 }));
+
+// Resume deletion polling for sessions that were mid-deletion on page reload
+if (typeof localStorage !== "undefined") {
+  const stored = readSessions();
+  for (const session of stored) {
+    if (
+      session.deletionStatus &&
+      session.deletionStatus !== "COMPLETED" &&
+      session.deletionStatus !== "FAILED" &&
+      session.conversationId
+    ) {
+      startDeletionPolling(session.id, session.conversationId);
+    }
+  }
+}
