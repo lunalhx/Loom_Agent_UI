@@ -1,8 +1,12 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { approvalRun, errorRun, normalRun, policyDeniedRun } from "@/lib/mockEvents";
 import { useAgentStore } from "./agentStore";
 
 describe("agent store event reducer", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   beforeEach(() => {
     useAgentStore.setState({
       status: "IDLE",
@@ -16,6 +20,8 @@ describe("agent store event reducer", () => {
       runHistory: [],
       answer: undefined,
       error: undefined,
+      runId: undefined,
+      streams: {},
       prompt: "mock task",
       submittedPrompt: "mock task"
     });
@@ -247,6 +253,311 @@ describe("agent store event reducer", () => {
     expect(state.steps[0].thought).toBe("read files");
     expect(state.trace[0].label).toBe("done");
     expect(state.status).toBe("COMPLETED");
+  });
+
+  it("persists local cancellation in the active session", () => {
+    const close = vi.fn();
+    useAgentStore.setState({
+      activeSessionId: "session-running",
+      status: "RUNNING",
+      streams: { "session-running": { close } },
+      sessions: [
+        {
+          id: "session-running",
+          title: "正在运行",
+          prompt: "正在运行",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING"
+        }
+      ]
+    });
+
+    useAgentStore.getState().stopRun();
+
+    const state = useAgentStore.getState();
+    expect(close).toHaveBeenCalledOnce();
+    expect(state.status).toBe("CANCELLED_LOCAL");
+    expect(state.sessions[0].status).toBe("CANCELLED_LOCAL");
+    expect(state.streams["session-running"]).toBeUndefined();
+  });
+
+  it("requests backend cancellation when the run id is known", () => {
+    const close = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ code: "0000", info: "cancelled", data: true }), {
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    useAgentStore.setState({
+      activeSessionId: "session-running",
+      runId: "run-123",
+      status: "RUNNING",
+      streams: { "session-running": { close } },
+      sessions: [
+        {
+          id: "session-running",
+          title: "正在运行",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING"
+        }
+      ]
+    });
+
+    useAgentStore.getState().stopRun();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/agent/code/runs/run-123/cancel", {
+      method: "POST"
+    });
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("does not restore a stale streaming status without a stream", () => {
+    useAgentStore.setState({
+      activeSessionId: undefined,
+      status: "IDLE",
+      streams: {},
+      sessions: [
+        {
+          id: "session-stale",
+          title: "遗留运行状态",
+          prompt: "遗留运行状态",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING"
+        }
+      ]
+    });
+
+    useAgentStore.getState().selectSession("session-stale");
+
+    expect(useAgentStore.getState().status).toBe("CANCELLED_LOCAL");
+  });
+
+  it("keeps the previous running session alive when switching sessions", () => {
+    const close = vi.fn();
+    useAgentStore.setState({
+      activeSessionId: "session-a",
+      status: "RUNNING",
+      streams: { "session-a": { close } },
+      submittedPrompt: "任务 A",
+      sessions: [
+        {
+          id: "session-a",
+          title: "任务 A",
+          prompt: "任务 A",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING"
+        },
+        {
+          id: "session-b",
+          title: "任务 B",
+          prompt: "任务 B",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "COMPLETED"
+        }
+      ]
+    });
+
+    useAgentStore.getState().selectSession("session-b");
+
+    const state = useAgentStore.getState();
+    expect(close).not.toHaveBeenCalled();
+    expect(state.activeSessionId).toBe("session-b");
+    expect(state.sessions.find((session) => session.id === "session-a")?.status).toBe("RUNNING");
+    expect(state.streams["session-a"]).toBeDefined();
+
+    useAgentStore.getState().selectSession("session-a");
+    expect(useAgentStore.getState().status).toBe("RUNNING");
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("routes events to an inactive session without changing the active view", () => {
+    useAgentStore.setState({
+      activeSessionId: "session-b",
+      status: "COMPLETED",
+      answer: "任务 B 已完成",
+      events: [],
+      sessions: [
+        {
+          id: "session-a",
+          title: "任务 A",
+          prompt: "任务 A",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING",
+          events: []
+        },
+        {
+          id: "session-b",
+          title: "任务 B",
+          prompt: "任务 B",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "COMPLETED",
+          answer: "任务 B 已完成"
+        }
+      ]
+    });
+
+    useAgentStore.getState().receiveEvent(
+      { type: "answer", answer: "任务 A 的后台结果", runId: "run-a" },
+      "session-a"
+    );
+    useAgentStore.getState().receiveEvent(
+      { type: "done", stopReason: "FINAL_ANSWER", runId: "run-a" },
+      "session-a"
+    );
+
+    const state = useAgentStore.getState();
+    const sessionA = state.sessions.find((session) => session.id === "session-a");
+    expect(state.activeSessionId).toBe("session-b");
+    expect(state.answer).toBe("任务 B 已完成");
+    expect(sessionA?.answer).toBe("任务 A 的后台结果");
+    expect(sessionA?.runId).toBe("run-a");
+    expect(sessionA?.status).toBe("COMPLETED");
+    expect(sessionA?.events).toHaveLength(2);
+
+    useAgentStore.getState().selectSession("session-a");
+    expect(useAgentStore.getState().status).toBe("COMPLETED");
+    expect(useAgentStore.getState().answer).toBe("任务 A 的后台结果");
+  });
+
+  it("opens a new session without closing background streams", () => {
+    const close = vi.fn();
+    useAgentStore.setState({
+      activeSessionId: "session-a",
+      status: "RUNNING",
+      streams: { "session-a": { close } },
+      sessions: [
+        {
+          id: "session-a",
+          title: "任务 A",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING"
+        }
+      ]
+    });
+
+    useAgentStore.getState().newSession();
+
+    const state = useAgentStore.getState();
+    expect(state.activeSessionId).toBeUndefined();
+    expect(state.streams["session-a"]).toBeDefined();
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("stops only the active session stream", () => {
+    const closeA = vi.fn();
+    const closeB = vi.fn();
+    useAgentStore.setState({
+      activeSessionId: "session-a",
+      status: "RUNNING",
+      streams: {
+        "session-a": { close: closeA },
+        "session-b": { close: closeB }
+      },
+      sessions: [
+        {
+          id: "session-a",
+          title: "任务 A",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING"
+        },
+        {
+          id: "session-b",
+          title: "任务 B",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING"
+        }
+      ]
+    });
+
+    useAgentStore.getState().stopRun();
+
+    const state = useAgentStore.getState();
+    expect(closeA).toHaveBeenCalledOnce();
+    expect(closeB).not.toHaveBeenCalled();
+    expect(state.streams["session-a"]).toBeUndefined();
+    expect(state.streams["session-b"]).toBeDefined();
+  });
+
+  it("deletes only the requested background session", () => {
+    const closeA = vi.fn();
+    const closeB = vi.fn();
+    useAgentStore.setState({
+      activeSessionId: "session-b",
+      status: "RUNNING",
+      streams: {
+        "session-a": { close: closeA },
+        "session-b": { close: closeB }
+      },
+      sessions: [
+        {
+          id: "session-a",
+          title: "任务 A",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING"
+        },
+        {
+          id: "session-b",
+          title: "任务 B",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "RUNNING"
+        }
+      ]
+    });
+
+    useAgentStore.getState().deleteSession("session-a");
+
+    const state = useAgentStore.getState();
+    expect(closeA).toHaveBeenCalledOnce();
+    expect(closeB).not.toHaveBeenCalled();
+    expect(state.sessions.map((session) => session.id)).toEqual(["session-b"]);
+    expect(state.streams["session-a"]).toBeUndefined();
+    expect(state.streams["session-b"]).toBeDefined();
+    expect(state.activeSessionId).toBe("session-b");
+  });
+
+  it("selects a fallback after deleting the active session", () => {
+    useAgentStore.setState({
+      activeSessionId: "session-a",
+      status: "COMPLETED",
+      sessions: [
+        {
+          id: "session-a",
+          title: "任务 A",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "COMPLETED"
+        },
+        {
+          id: "session-b",
+          title: "任务 B",
+          prompt: "任务 B",
+          createdAt: "2026-06-23T00:00:00.000Z",
+          updatedAt: "2026-06-23T00:00:00.000Z",
+          status: "ERROR",
+          error: "failed"
+        }
+      ]
+    });
+
+    useAgentStore.getState().deleteSession("session-a");
+
+    const state = useAgentStore.getState();
+    expect(state.activeSessionId).toBe("session-b");
+    expect(state.status).toBe("ERROR");
+    expect(state.error).toBe("failed");
   });
 
   it("starts a new local session canvas", () => {

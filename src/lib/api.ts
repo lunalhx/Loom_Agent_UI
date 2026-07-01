@@ -200,3 +200,10 @@ export async function undoRun(runId: string, request: AgentUndoRequest): Promise
   });
   return parseApiResponse<AgentUndoResponse>(response);
 }
+
+export async function cancelAgentRun(runId: string): Promise<boolean> {
+  const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/cancel`, {
+    method: "POST"
+  });
+  return parseApiResponse<boolean>(response);
+}

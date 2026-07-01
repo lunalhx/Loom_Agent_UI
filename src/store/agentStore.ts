@@ -8,6 +8,7 @@ import {
   getRunUndo,
   undoRun,
   querySkills,
+  cancelAgentRun,
   ApiRequestError,
   FeatureMissingError,
   type StreamHandle
@@ -189,7 +190,7 @@ type AgentState = {
   error?: string;
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; costUsd?: number };
   sessions: Session[];
-  stream?: StreamHandle;
+  streams: Record<string, StreamHandle>;
   undoByRunId: Record<string, UndoViewState>;
   undoDialogRunId?: string;
   undoFeatureMissing: boolean;
@@ -204,6 +205,7 @@ type AgentState = {
   setWorkspace: (workspace: string) => void;
   newSession: () => void;
   selectSession: (sessionId: string) => void;
+  deleteSession: (sessionId: string) => void;
   setSelectedLocalFile: (file?: File) => void;
   setSelectedLocalFolder: (files?: FileList | File[]) => void;
   resolveCurrentWorkspace: () => Promise<void>;
@@ -214,7 +216,7 @@ type AgentState = {
   clearSelectedSkills: () => void;
   startRun: () => Promise<void>;
   replayMock: (sequence: AgentStreamEvent[]) => void;
-  receiveEvent: (event: AgentStreamEvent) => void;
+  receiveEvent: (event: AgentStreamEvent, sessionId?: string) => void;
   stopRun: () => void;
   decide: (approvalId: string, decision: AgentApprovalDecisionRequest["decision"], reason?: string) => Promise<void>;
   loadUndo: (runId: string) => Promise<void>;
@@ -280,6 +282,63 @@ function upsertSessionSnapshot(sessions: Session[], snapshot?: Session) {
   const next = sessions.map((session) => (session.id === snapshot.id ? snapshot : session));
   writeSessions(next);
   return next;
+}
+
+function isStreamingStatus(status?: RunStatus) {
+  return status === "CONNECTING" || status === "RUNNING" || status === "RESUMING";
+}
+
+function sessionViewState(state: AgentState, session: Session): AgentState {
+  return {
+    ...state,
+    activeSessionId: session.id,
+    runId: session.runId,
+    requestId: session.requestId,
+    conversationId: session.conversationId,
+    status: session.status || "IDLE",
+    submittedPrompt: session.prompt || session.title,
+    workspace: session.workspace || state.workspace,
+    error: session.error,
+    answer: session.answer,
+    events: session.events || [],
+    steps: session.steps || [],
+    plan: session.plan || [],
+    planTriggered: session.planTriggered || false,
+    trace: normalizeTrace(session.trace),
+    approvals: session.approvals || {},
+    recentFiles: session.recentFiles || [],
+    runHistory: session.runHistory || [],
+    undoByRunId: session.undoByRunId || {}
+  };
+}
+
+function patchSessionState(state: AgentState, sessionId: string, patch: Partial<AgentState>): Partial<AgentState> {
+  const session = state.sessions.find((item) => item.id === sessionId);
+  if (!session) return {};
+  const targetState = sessionId === state.activeSessionId ? state : sessionViewState(state, session);
+  const sessions = upsertSessionSnapshot(state.sessions, snapshotSession(targetState, patch));
+  return sessionId === state.activeSessionId ? { ...patch, sessions } : { sessions };
+}
+
+function withoutSessionStream(streams: Record<string, StreamHandle>, sessionId: string, expected?: StreamHandle) {
+  if (!streams[sessionId] || (expected && streams[sessionId] !== expected)) return streams;
+  const next = { ...streams };
+  delete next[sessionId];
+  return next;
+}
+
+function cancelSessionStream(state: AgentState, sessionId?: string) {
+  if (!sessionId) return;
+  const stream = state.streams[sessionId];
+  if (!stream) return;
+  const session = state.sessions.find((item) => item.id === sessionId);
+  const runId = sessionId === state.activeSessionId ? state.runId : session?.runId;
+  if (!runId) {
+    stream.close();
+    return;
+  }
+  void cancelAgentRun(runId).catch(() => undefined);
+  stream.close();
 }
 
 function titleFromPrompt(prompt: string) {
@@ -488,6 +547,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   skillsLoading: false,
   skillsError: undefined,
   skillsWorkspace: undefined,
+  streams: {},
 
   loadModelConfig: async () => {
     try {
@@ -507,8 +567,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setSelectedModel: (selectedModel) => set({ selectedModel }),
   setPrompt: (prompt) => set({ prompt }),
   newSession: () =>
-    set((state) => {
-      state.stream?.close();
+    set(() => {
       return {
         activeSessionId: undefined,
         runId: undefined,
@@ -532,15 +591,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         selectedLocalFolder: undefined,
         undoByRunId: {},
         undoDialogRunId: undefined,
-        undoFeatureMissing: false,
-        stream: undefined
+        undoFeatureMissing: false
       };
     }),
   selectSession: (sessionId) =>
     set((state) => {
+      if (sessionId === state.activeSessionId) return {};
       const session = state.sessions.find((item) => item.id === sessionId);
       if (!session) return {};
-      state.stream?.close();
+      const restoredSession = session;
       const restoredUndo = session.undoByRunId || {};
       // Reset stale executing/loading states
       const sanitizedUndo: Record<string, UndoViewState> = {};
@@ -559,39 +618,57 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         void useAgentStore.getState().loadUndoStack(idsToQuery);
       }, 0);
       return {
-        activeSessionId: session.id,
-        runId: session.runId,
-        requestId: session.requestId,
-        conversationId: session.conversationId,
-        status: session.status || "IDLE",
+        activeSessionId: restoredSession.id,
+        runId: restoredSession.runId,
+        requestId: restoredSession.requestId,
+        conversationId: restoredSession.conversationId,
+        status: isStreamingStatus(restoredSession.status) && !state.streams[sessionId]
+          ? "CANCELLED_LOCAL"
+          : restoredSession.status || "IDLE",
         statusMessage: "session selected",
-        prompt: session.prompt || session.title,
-        submittedPrompt: session.prompt || session.title,
-        workspace: session.workspace || state.workspace,
-        error: session.error,
-        answer: session.answer,
-        events: session.events || [],
-        steps: session.steps || [],
-        plan: session.plan || [],
+        prompt: restoredSession.prompt || restoredSession.title,
+        submittedPrompt: restoredSession.prompt || restoredSession.title,
+        workspace: restoredSession.workspace || state.workspace,
+        error: restoredSession.error,
+        answer: restoredSession.answer,
+        events: restoredSession.events || [],
+        steps: restoredSession.steps || [],
+        plan: restoredSession.plan || [],
         planTriggered:
-          session.planTriggered ??
+          restoredSession.planTriggered ??
           Boolean(
-            session.events?.some(
+            restoredSession.events?.some(
               ({ event }) =>
                 event.type === "plan_updated" ||
                 event.type === "replan_started" ||
                 (event.type === "resume_started" && Boolean(event.plan))
             )
           ),
-        trace: normalizeTrace(session.trace),
-        approvals: session.approvals || {},
-        recentFiles: session.recentFiles || [],
-        runHistory: session.runHistory || [],
+        trace: normalizeTrace(restoredSession.trace),
+        approvals: restoredSession.approvals || {},
+        recentFiles: restoredSession.recentFiles || [],
+        runHistory: restoredSession.runHistory || [],
         undoByRunId: sanitizedUndo,
-        undoFeatureMissing: false,
-        stream: undefined
+        undoFeatureMissing: false
       };
     }),
+  deleteSession: (sessionId) => {
+    const state = get();
+    const session = state.sessions.find((item) => item.id === sessionId);
+    if (!session) return;
+    cancelSessionStream(state, sessionId);
+    const sessions = state.sessions.filter((item) => item.id !== sessionId);
+    const streams = withoutSessionStream(state.streams, sessionId);
+    writeSessions(sessions);
+    set({ sessions, streams });
+    if (state.activeSessionId === sessionId) {
+      if (sessions[0]) {
+        get().selectSession(sessions[0].id);
+      } else {
+        get().newSession();
+      }
+    }
+  },
   setWorkspace: (workspace) =>
     set({
       workspace,
@@ -791,7 +868,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return;
     }
 
-    state.stream?.close();
+    cancelSessionStream(state, state.activeSessionId);
     const createdAt = new Date().toISOString();
     const activeSession = state.activeSessionId ? state.sessions.find((item) => item.id === state.activeSessionId) : undefined;
     const previousRun = snapshotCurrentRun(state);
@@ -840,7 +917,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       approvals: {},
       recentFiles: [],
       runHistory,
-      undoDialogRunId: undefined
+      undoDialogRunId: undefined,
+      streams: state.activeSessionId
+        ? withoutSessionStream(state.streams, state.activeSessionId)
+        : state.streams
     });
 
     try {
@@ -854,20 +934,48 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         skills: [...state.selectedSkillNames]
       };
       const stream = openAgentAskStream(request, {
-        onOpen: () => set({ status: "RUNNING", statusMessage: "connected" }),
-        onEvent: get().receiveEvent,
+        onOpen: () => {
+          const current = get();
+          if (current.streams[session.id] !== stream) return;
+          set((latest) => patchSessionState(latest, session.id, {
+            status: "RUNNING",
+            statusMessage: "connected"
+          }));
+        },
+        onEvent: (event) => {
+          const current = get();
+          if (current.streams[session.id] === stream) current.receiveEvent(event, session.id);
+        },
         onDisconnect: () => {
-          const status = get().status;
+          const current = get();
+          if (current.streams[session.id] !== stream) return;
+          const storedSession = current.sessions.find((item) => item.id === session.id);
+          const status = session.id === current.activeSessionId ? current.status : storedSession?.status || "IDLE";
+          const patch: Partial<AgentState> = {};
           if (!["COMPLETED", "ERROR", "WAITING_APPROVAL", "CANCELLED_LOCAL"].includes(status)) {
-            set({ status: "DISCONNECTED", statusMessage: "disconnected" });
+            patch.status = "DISCONNECTED";
+            patch.statusMessage = "disconnected";
           }
+          set((latest) => ({
+            ...patchSessionState(latest, session.id, patch),
+            streams: withoutSessionStream(latest.streams, session.id, stream)
+          }));
           if (["COMPLETED", "ERROR"].includes(status)) {
-            setTimeout(() => get().refreshUndoAfterTerminal(), 100);
+            if (get().activeSessionId === session.id) {
+              setTimeout(() => get().refreshUndoAfterTerminal(), 100);
+            }
           }
         },
-        onError: (error) => set({ status: "ERROR", error: error.message })
+        onError: (error) => {
+          const current = get();
+          if (current.streams[session.id] !== stream) return;
+          set((latest) => ({
+            ...patchSessionState(latest, session.id, { status: "ERROR", error: error.message }),
+            streams: withoutSessionStream(latest.streams, session.id, stream)
+          }));
+        }
       });
-      set({ stream });
+      set((current) => ({ streams: { ...current.streams, [session.id]: stream } }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "运行创建失败";
       set({ status: "ERROR", error: message, statusMessage: "error" });
@@ -875,7 +983,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   replayMock: (sequence) => {
-    get().stream?.close();
+    cancelSessionStream(get(), get().activeSessionId);
     set({
       status: "RUNNING",
       error: undefined,
@@ -894,23 +1002,31 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  receiveEvent: (event) => {
+  receiveEvent: (event, sessionId) => {
     set((state) => {
+      const targetSessionId = sessionId || state.activeSessionId;
+      const targetSession = targetSessionId
+        ? state.sessions.find((item) => item.id === targetSessionId)
+        : undefined;
+      if (sessionId && !targetSession) return {};
+      const eventState = targetSession && targetSessionId !== state.activeSessionId
+        ? sessionViewState(state, targetSession)
+        : state;
       const time = formatTime();
-      const events = [...state.events, { id: crypto.randomUUID(), event, receivedAt: time }];
-      let steps = state.steps;
-      let plan = state.plan;
-      let planTriggered = state.planTriggered;
-      let trace = state.trace;
-      let approvals = state.approvals;
-      let recentFiles = state.recentFiles;
-      let nextStatus = state.status;
-      let answer = state.answer;
-      let error = state.error;
-      let requestId = state.requestId;
-      let conversationId = state.conversationId;
-      let workspace = state.workspace;
-      let runId = state.runId;
+      const events = [...eventState.events, { id: crypto.randomUUID(), event, receivedAt: time }];
+      let steps = eventState.steps;
+      let plan = eventState.plan;
+      let planTriggered = eventState.planTriggered;
+      let trace = eventState.trace;
+      let approvals = eventState.approvals;
+      let recentFiles = eventState.recentFiles;
+      let nextStatus = eventState.status;
+      let answer = eventState.answer;
+      let error = eventState.error;
+      let requestId = eventState.requestId;
+      let conversationId = eventState.conversationId;
+      let workspace = eventState.workspace;
+      let runId = eventState.runId;
 
       runId = event.runId || runId;
       requestId = event.requestId || requestId;
@@ -1173,23 +1289,36 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         workspace
       };
 
-      return {
-        ...nextState,
-        sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, nextState))
-      };
+      const sessions = upsertSessionSnapshot(state.sessions, snapshotSession(eventState, nextState));
+      return targetSessionId && targetSessionId !== state.activeSessionId
+        ? { sessions }
+        : { ...nextState, sessions };
     });
   },
 
   stopRun: () => {
-    get().stream?.close();
-    set({ status: "CANCELLED_LOCAL", statusMessage: "cancelled locally", stream: undefined });
+    cancelSessionStream(get(), get().activeSessionId);
+    set((state) => {
+      const sessionId = state.activeSessionId;
+      const nextState = {
+        status: "CANCELLED_LOCAL" as const,
+        statusMessage: "cancelled locally"
+      };
+      return {
+        ...nextState,
+        sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, nextState)),
+        streams: sessionId ? withoutSessionStream(state.streams, sessionId) : state.streams
+      };
+    });
   },
 
   decide: async (approvalId, decision, reason) => {
-    const approval = get().approvals[approvalId];
-    if (!approval) return;
+    const initial = get();
+    const sessionId = initial.activeSessionId;
+    const approval = initial.approvals[approvalId];
+    if (!approval || !sessionId) return;
     const decidingStatus = decision === "APPROVE" ? "approving" : "rejecting";
-    set((state) => ({
+    set((state) => patchSessionState(state, sessionId, {
       status: "RESUMING",
       approvals: {
         ...state.approvals,
@@ -1199,54 +1328,69 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     try {
       const stream = openApprovalDecisionStream(approvalId, { decision, reason }, {
-        onOpen: () =>
-          set((state) => ({
+        onOpen: () => {
+          if (get().streams[sessionId] !== stream) return;
+          set((state) => patchSessionState(state, sessionId, {
             status: "RUNNING",
             statusMessage: "resumed",
             approvals: {
-              ...state.approvals,
+              ...(sessionId === state.activeSessionId
+                ? state.approvals
+                : state.sessions.find((item) => item.id === sessionId)?.approvals || {}),
               [approvalId]: {
-                ...(state.approvals[approvalId] || approval),
+                ...approval,
                 status: decision === "APPROVE" ? "approved" : "rejected"
               }
             }
-          })),
-        onEvent: get().receiveEvent,
+          }));
+        },
+        onEvent: (event) => {
+          if (get().streams[sessionId] === stream) get().receiveEvent(event, sessionId);
+        },
         onDisconnect: () => {
-          const status = get().status;
+          const current = get();
+          if (current.streams[sessionId] !== stream) return;
+          const storedSession = current.sessions.find((item) => item.id === sessionId);
+          const status = sessionId === current.activeSessionId ? current.status : storedSession?.status || "IDLE";
+          const patch: Partial<AgentState> = {};
           if (!["COMPLETED", "ERROR", "WAITING_APPROVAL", "CANCELLED_LOCAL"].includes(status)) {
-            set({ status: "DISCONNECTED", statusMessage: "disconnected" });
+            patch.status = "DISCONNECTED";
+            patch.statusMessage = "disconnected";
           }
+          set((state) => ({
+            ...patchSessionState(state, sessionId, patch),
+            streams: withoutSessionStream(state.streams, sessionId, stream)
+          }));
           if (["COMPLETED", "ERROR"].includes(status)) {
-            setTimeout(() => get().refreshUndoAfterTerminal(), 100);
+            if (get().activeSessionId === sessionId) {
+              setTimeout(() => get().refreshUndoAfterTerminal(), 100);
+            }
           }
         },
         onError: (error) =>
           set((state) => {
+            if (state.streams[sessionId] !== stream) return {};
+            const target = sessionId === state.activeSessionId
+              ? state
+              : sessionViewState(state, state.sessions.find((item) => item.id === sessionId)!);
             const nextState = {
               status: "ERROR" as const,
               error: error.message,
               approvals: {
-                ...state.approvals,
+                ...target.approvals,
                 [approvalId]: { ...approval, status: "pending" as const }
               }
             };
             return {
-              ...nextState,
-              sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, nextState))
+              ...patchSessionState(state, sessionId, nextState),
+              streams: withoutSessionStream(state.streams, sessionId, stream)
             };
           })
       });
-      set((state) => {
-        const nextState = { stream };
-        return {
-          ...nextState,
-          sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, nextState))
-        };
-      });
+      set((state) => ({ streams: { ...state.streams, [sessionId]: stream } }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "审批失败";
-      set({ status: "ERROR", error: message });
+      set((state) => patchSessionState(state, sessionId, { status: "ERROR", error: message }));
     }
   },
 

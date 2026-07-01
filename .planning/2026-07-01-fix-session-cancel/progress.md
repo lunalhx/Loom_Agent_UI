@@ -1,0 +1,23 @@
+# Progress
+
+- 2026-07-01: Diagnosed the frontend session snapshot and stream callback issues.
+- 2026-07-01: Diagnosed the backend cancellation lifecycle and missing terminal state.
+- 2026-07-01: Added frontend regression tests for stop persistence, stale status restoration, and switching away from a running session.
+- 2026-07-01: Implemented persisted local cancellation and scoped ask-stream callbacks to their originating session/stream.
+- 2026-07-01: Targeted agent-store suite passed (28 tests). Full build is blocked by an unrelated existing `CodeDiffPanel.test.tsx` fixture type error.
+- 2026-07-01: Added `POST /runs/{runId}/cancel`, active-run cancellation flags, `USER_CANCELLED`, and persisted `CANCELLED` status.
+- 2026-07-01: Frontend full suite passed (51 tests); backend compiled successfully.
+- 2026-07-01: Backend controller contract suite passed (25 tests) and Agent loop suite passed (40 tests).
+- 2026-07-01: Started follow-up work to support parallel conversations without cancelling on view switches.
+- 2026-07-01: Replaced the global stream handle with per-session stream ownership and session-targeted event reduction.
+- 2026-07-01: Updated ask and approval stream callbacks so inactive sessions continue updating independently.
+- 2026-07-01: Added regression coverage for switching, background completion, new-session behavior, and isolated stopping; targeted suite passed (32 tests).
+- 2026-07-01: Full frontend suite passed (54 tests) and the Vite production bundle completed successfully.
+- 2026-07-01: `npm run build` remains blocked only by the pre-existing `CodeDiffPanel.test.tsx:162` fixture type error.
+- 2026-07-01: Started sidebar status, deletion, and file-tree scrolling follow-up.
+- 2026-07-01: Added per-session status mapping, confirmed delete controls, and store deletion with stream isolation.
+- 2026-07-01: Converted the Files section to a constrained flex column with an independent vertical scroll region.
+- 2026-07-01: Added Sidebar component tests; status, deletion, and scroll-region tests pass.
+- 2026-07-01: Browser inspection confirmed the new status row and delete control fit the existing sidebar layout.
+- 2026-07-01: Browser computed layout confirmed the Files region uses `overflow-y: auto` inside a constrained flex column.
+- 2026-07-01: Full frontend suite passed (59 tests) and Vite production bundling succeeded.
