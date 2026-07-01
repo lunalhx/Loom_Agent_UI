@@ -31,7 +31,6 @@ import type {
   AgentWorkspaceTreeNode,
   BackgroundTask,
   BackgroundTaskDetail,
-  BackgroundTaskStatus,
   ConversationDeletionResponse,
   ConversationDeletionStatus,
   ModelConfigResponse,
@@ -1256,79 +1255,30 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         ];
       }
 
-      // Background task events
+      // Background task events — backend sends these without a structured
+      // backgroundTask payload, so we re-fetch the full task list from the API.
       if (
         event.type === "background_task_started" ||
         event.type === "background_task_completed" ||
         event.type === "background_task_failed" ||
         event.type === "background_task_cancelled"
       ) {
-        const bt = event.backgroundTask;
-        if (bt) {
-          const statusMap: Record<string, BackgroundTaskStatus> = {
-            background_task_started: "RUNNING",
-            background_task_completed: "SUCCEEDED",
-            background_task_failed: "FAILED",
-            background_task_cancelled: "CANCELLED"
-          };
-          const newStatus = statusMap[event.type] || bt.status;
-          const existing = eventState.backgroundTasks.find((t) => t.taskId === bt.taskId);
-          const upserted: BackgroundTaskState = {
-            ...(existing || {
-              stdoutChunks: [],
-              stderrChunks: [],
-              stdoutOffset: 0,
-              stderrOffset: 0,
-              stdoutEof: false,
-              stderrEof: false
-            }),
-            ...bt,
-            status: newStatus
-          };
-          const backgroundTasks = existing
-            ? eventState.backgroundTasks.map((t) => (t.taskId === bt.taskId ? upserted : t))
-            : [...eventState.backgroundTasks, upserted];
-
-          const traceLabels: Record<string, string> = {
-            background_task_started: `task launched · ${bt.command}`,
-            background_task_completed: `task completed · ${bt.command}`,
-            background_task_failed: `task failed · ${bt.command}`,
-            background_task_cancelled: `task cancelled · ${bt.command}`
-          };
-          trace = [
-            ...trace,
-            {
-              id: crypto.randomUUID(),
-              label: traceLabels[event.type] || event.type,
-              detail: bt.command,
-              time,
-              type: "meta",
-              iteration: eventIteration(event, trace)
-            }
-          ];
-
-          // Update nextState to include backgroundTasks
-          const nextStateWithBg = {
-            events,
-            steps,
-            plan,
-            planTriggered,
-            trace,
-            approvals,
-            recentFiles,
-            status: nextStatus,
-            answer,
-            error,
-            runId,
-            requestId,
-            conversationId,
-            workspace,
-            backgroundTasks
-          };
-          const sessions = upsertSessionSnapshot(state.sessions, snapshotSession(eventState, nextStateWithBg));
-          return targetSessionId && targetSessionId !== state.activeSessionId
-            ? { sessions }
-            : { ...nextStateWithBg, sessions };
+        const taskCommand = event.thought || event.type;
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: event.type.replace(/_/g, " "),
+            detail: taskCommand,
+            time,
+            type: "meta",
+            iteration: eventIteration(event, trace)
+          }
+        ];
+        if (runId) {
+          setTimeout(() => {
+            void useAgentStore.getState().fetchBackgroundTasks(runId);
+          }, 0);
         }
       }
 
@@ -1465,6 +1415,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
                 : "executed"
             }
           };
+        }
+        // When a background task is launched, the observation text contains
+        // "后台任务已启动". Re-fetch the task list so it appears in the UI.
+        if (event.observation?.includes("后台任务已启动") && runId) {
+          setTimeout(() => {
+            void useAgentStore.getState().fetchBackgroundTasks(runId);
+          }, 0);
         }
       }
 
