@@ -51,7 +51,10 @@ export type AgentTool =
   | "edit_file"
   | "delete_files"
   | "run_shell"
-  | "git_op";
+  | "git_op"
+  | "activate_skill"
+  | "read_skill_resource"
+  | "copy_skill_resource";
 
 export type AgentNode =
   | "start"
@@ -75,6 +78,7 @@ export type AgentEventType =
   | "sub_agent_completed"
   | "sub_agent_failed"
   | "sub_agent_summary"
+  | "skill_activated"
   | "thought"
   | "tool_call"
   | "approval_required"
@@ -171,6 +175,11 @@ export type DeleteApprovalPreview = {
 
 export type AgentEventMetadata = {
   deletePreview?: DeleteApprovalPreview;
+  kind?: string;
+  skills?: SkillApprovalItem[];
+  name?: string;
+  source?: string;
+  manifestSha256?: string;
   [key: string]: unknown;
 };
 
@@ -232,6 +241,7 @@ export type AgentAskRequest = {
   workspace?: string;
   maxSteps?: number;
   includeTrace?: boolean;
+  skills?: string[];
 };
 
 export type AgentApprovalResponse = {
@@ -356,4 +366,26 @@ export type AgentUndoResponse = {
 
 export type AgentUndoRequest = {
   expectedSnapshotVersion: number;
+};
+
+// ---- Skill types ----
+
+export type SkillSource = "user" | "project";
+
+export type SkillTrustState = "trusted" | "approval_required";
+
+export type SkillSummary = {
+  name: string;
+  description?: string;
+  source: SkillSource;
+  compatibility?: string;
+  trustState: SkillTrustState;
+  diagnostics?: string[];
+};
+
+export type SkillApprovalItem = {
+  name: string;
+  description: string;
+  source: string;
+  manifestSha256: string;
 };

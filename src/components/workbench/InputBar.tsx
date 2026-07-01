@@ -2,6 +2,7 @@ import { AtSign, ChevronDown, Send, Square, X } from "lucide-react";
 import { useRef } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { useAgentStore } from "@/store/agentStore";
+import SkillSelector from "@/components/workbench/SkillSelector";
 
 export function InputBar() {
   const prompt = useAgentStore((state) => state.prompt);
@@ -60,6 +61,8 @@ export function InputBar() {
               文件
             </button>
           )}
+
+          <SkillSelector />
 
           <label className="relative inline-flex h-7 min-w-0 max-w-[170px] items-center rounded-full border border-white/[0.09] bg-white/[0.035] text-[10.5px] text-white/48">
             <select

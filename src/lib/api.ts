@@ -10,7 +10,8 @@ import type {
   AgentWorkspaceTreeRequest,
   AgentWorkspaceTreeResponse,
   ApiResponse,
-  ModelConfigResponse
+  ModelConfigResponse,
+  SkillSummary
 } from "@/types/backend";
 
 export class FeatureMissingError extends Error {
@@ -180,6 +181,15 @@ function dispatchSseEvent(rawEvent: string, handlers: StreamHandlers) {
 export async function getRunUndo(runId: string): Promise<AgentUndoResponse> {
   const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/undo`);
   return parseApiResponse<AgentUndoResponse>(response);
+}
+
+export async function querySkills(workspace?: string): Promise<SkillSummary[]> {
+  const response = await fetch(`${API_BASE}/agent/code/skills/query`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace })
+  });
+  return parseApiResponse<SkillSummary[]>(response);
 }
 
 export async function undoRun(runId: string, request: AgentUndoRequest): Promise<AgentUndoResponse> {

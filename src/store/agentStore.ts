@@ -7,6 +7,7 @@ import {
   resolveWorkspace,
   getRunUndo,
   undoRun,
+  querySkills,
   ApiRequestError,
   FeatureMissingError,
   type StreamHandle
@@ -22,7 +23,8 @@ import type {
   AgentUndoResponse,
   AgentWorkspaceTreeNode,
   ModelConfigResponse,
-  RunStatus
+  RunStatus,
+  SkillSummary
 } from "@/types/backend";
 
 export type TimelineEntry = {
@@ -80,6 +82,7 @@ export type RunHistoryItem = {
   steps?: StepState[];
   answer?: string;
   error?: string;
+  skillNames?: string[];
 };
 
 export type Session = {
@@ -132,6 +135,28 @@ export type UndoViewState = {
 
 const defaultModels = ["deepseek-v4-flash", "deepseek-v4-pro"];
 
+type WorkspaceSkillPreference = {
+  selectedNames: string[];
+  knownNames: string[];
+};
+
+const skillPreferenceStorageKey = "loom-agent:skill-selections:v1";
+
+function readSkillPreferences(): Record<string, WorkspaceSkillPreference> {
+  try {
+    const raw = localStorage.getItem(skillPreferenceStorageKey);
+    return raw ? (JSON.parse(raw) as Record<string, WorkspaceSkillPreference>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSkillPreferences(prefs: Record<string, WorkspaceSkillPreference>): void {
+  try {
+    localStorage.setItem(skillPreferenceStorageKey, JSON.stringify(prefs));
+  } catch { /* ignore quota */ }
+}
+
 type AgentState = {
   modelConfig?: ModelConfigResponse;
   allowedModels: string[];
@@ -168,6 +193,11 @@ type AgentState = {
   undoByRunId: Record<string, UndoViewState>;
   undoDialogRunId?: string;
   undoFeatureMissing: boolean;
+  availableSkills: SkillSummary[];
+  selectedSkillNames: string[];
+  skillsLoading: boolean;
+  skillsError?: string;
+  skillsWorkspace?: string;
   loadModelConfig: () => Promise<void>;
   setSelectedModel: (model: string) => void;
   setPrompt: (prompt: string) => void;
@@ -178,6 +208,10 @@ type AgentState = {
   setSelectedLocalFolder: (files?: FileList | File[]) => void;
   resolveCurrentWorkspace: () => Promise<void>;
   loadWorkspaceTree: (path?: string) => Promise<void>;
+  loadSkills: (workspace?: string) => Promise<void>;
+  toggleSkill: (name: string) => void;
+  selectAllUserSkills: () => void;
+  clearSelectedSkills: () => void;
   startRun: () => Promise<void>;
   replayMock: (sequence: AgentStreamEvent[]) => void;
   receiveEvent: (event: AgentStreamEvent) => void;
@@ -277,7 +311,8 @@ function snapshotCurrentRun(state: AgentState): RunHistoryItem | undefined {
     events: state.events,
     steps: state.steps,
     answer: state.answer,
-    error: state.error
+    error: state.error,
+    skillNames: [...state.selectedSkillNames]
   };
 }
 
@@ -339,6 +374,7 @@ function traceType(event: AgentStreamEvent, fallback?: string) {
   if (event.type === "answer" || event.type === "done") return "final_answer";
   if (event.type === "thought") return "planner";
   if (event.type === "meta") return "meta";
+  if (event.type === "skill_activated") return "skill";
   if (event.type === "observation" || event.type === "checkpoint_saved") return "meta";
   return fallback || event.type;
 }
@@ -447,6 +483,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   sessions: typeof localStorage === "undefined" ? [] : readSessions(),
   undoByRunId: {},
   undoFeatureMissing: false,
+  availableSkills: [],
+  selectedSkillNames: [],
+  skillsLoading: false,
+  skillsError: undefined,
+  skillsWorkspace: undefined,
 
   loadModelConfig: async () => {
     try {
@@ -615,6 +656,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         workspaceTree: undefined
       });
       await get().loadWorkspaceTree("");
+      // Load skills in parallel after workspace is resolved
+      get().loadSkills(resolved.workspace);
     } catch (error) {
       set({
         workspaceTreeLoading: false,
@@ -645,6 +688,102 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         workspaceTreeError: error instanceof Error ? error.message : "目录树读取失败"
       });
     }
+  },
+
+  loadSkills: async (workspace) => {
+    const w = workspace ?? get().workspace.trim();
+    if (!w) {
+      set({ availableSkills: [], selectedSkillNames: [], skillsLoading: false });
+      return;
+    }
+    set({ skillsLoading: true, skillsError: undefined, skillsWorkspace: w });
+    try {
+      const skills = await querySkills(w);
+      const prefs = readSkillPreferences();
+      const entry = prefs[w];
+      const knownNames = entry?.knownNames ?? [];
+      const knownSet = new Set(knownNames);
+      const prevSelected = new Set(entry?.selectedNames ?? []);
+
+      // Merge: known skills keep prior selection, new user skills default selected, new project default not
+      const selectedNames: string[] = [];
+      for (const s of skills) {
+        if (knownSet.has(s.name)) {
+          if (prevSelected.has(s.name)) {
+            selectedNames.push(s.name);
+          }
+        } else if (s.source === "user") {
+          selectedNames.push(s.name);
+        }
+      }
+
+      const newKnown = skills.map((s) => s.name);
+      set({
+        availableSkills: skills,
+        selectedSkillNames: selectedNames,
+        skillsLoading: false,
+        skillsError: undefined,
+        skillsWorkspace: w
+      });
+      // Persist
+      const nextPrefs = readSkillPreferences();
+      nextPrefs[w] = { selectedNames, knownNames: newKnown };
+      writeSkillPreferences(nextPrefs);
+    } catch (error) {
+      set({
+        skillsLoading: false,
+        skillsError: error instanceof Error ? error.message : "技能查询失败"
+      });
+    }
+  },
+
+  toggleSkill: (name) => {
+    set((state) => {
+      const selected = state.selectedSkillNames.includes(name)
+        ? state.selectedSkillNames.filter((n) => n !== name)
+        : [...state.selectedSkillNames, name];
+      const w = state.skillsWorkspace || state.workspace.trim();
+      if (w) {
+        const nextPrefs = readSkillPreferences();
+        const entry = nextPrefs[w] ?? { selectedNames: [], knownNames: state.availableSkills.map((s) => s.name) };
+        nextPrefs[w] = { ...entry, selectedNames: selected };
+        writeSkillPreferences(nextPrefs);
+      }
+      return { selectedSkillNames: selected };
+    });
+  },
+
+  selectAllUserSkills: () => {
+    set((state) => {
+      const projectNames = new Set(
+        state.availableSkills.filter((s) => s.source === "project").map((s) => s.name)
+      );
+      const selected = [
+        ...state.selectedSkillNames.filter((n) => !projectNames.has(n)),
+        ...state.availableSkills.filter((s) => s.source === "user").map((s) => s.name)
+      ];
+      const w = state.skillsWorkspace || state.workspace.trim();
+      if (w) {
+        const nextPrefs = readSkillPreferences();
+        const entry = nextPrefs[w] ?? { selectedNames: [], knownNames: state.availableSkills.map((s) => s.name) };
+        nextPrefs[w] = { ...entry, selectedNames: selected };
+        writeSkillPreferences(nextPrefs);
+      }
+      return { selectedSkillNames: selected };
+    });
+  },
+
+  clearSelectedSkills: () => {
+    set((state) => {
+      const w = state.skillsWorkspace || state.workspace.trim();
+      if (w) {
+        const nextPrefs = readSkillPreferences();
+        const entry = nextPrefs[w] ?? { selectedNames: [], knownNames: state.availableSkills.map((s) => s.name) };
+        nextPrefs[w] = { ...entry, selectedNames: [] };
+        writeSkillPreferences(nextPrefs);
+      }
+      return { selectedSkillNames: [] };
+    });
   },
 
   startRun: async () => {
@@ -714,7 +853,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         message,
         conversationId: state.conversationId || undefined,
         workspace: state.workspace || undefined,
-        includeTrace: true
+        includeTrace: true,
+        skills: [...state.selectedSkillNames]
       };
       const stream = openAgentAskStream(request, {
         onOpen: () => set({ status: "RUNNING", statusMessage: "connected" }),
@@ -802,17 +942,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         event.type === "sub_agent_started" ||
         event.type === "sub_agent_completed" ||
         event.type === "sub_agent_failed" ||
-        event.type === "sub_agent_summary"
+        event.type === "sub_agent_summary" ||
+        event.type === "skill_activated"
       ) {
         trace = [
           ...trace,
           {
             id: crypto.randomUUID(),
-            label: event.node || event.subAgentName || event.type,
-            detail: traceDetail(event),
-            status: traceStatus(event),
+            label: event.type === "skill_activated"
+              ? `skill · ${event.metadata?.name || "unknown"}`
+              : (event.node || event.subAgentName || event.type),
+            detail: event.type === "skill_activated"
+              ? `来源: ${event.metadata?.source || "unknown"}`
+              : traceDetail(event),
+            status: "done",
             time,
-            type: traceType(event),
+            type: event.type === "skill_activated" ? "skill" : traceType(event),
             iteration: eventIteration(event, trace)
           }
         ];
