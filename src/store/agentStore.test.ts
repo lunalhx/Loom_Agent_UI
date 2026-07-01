@@ -57,6 +57,28 @@ describe("agent store event reducer", () => {
     expect(useAgentStore.getState().planTriggered).toBe(false);
   });
 
+  it("selects all user skills idempotently", () => {
+    useAgentStore.setState({
+      workspace: "",
+      skillsWorkspace: undefined,
+      availableSkills: [
+        { name: "user-a", source: "user", trustState: "trusted" },
+        { name: "user-b", source: "user", trustState: "trusted" },
+        { name: "project-a", source: "project", trustState: "approval_required" }
+      ],
+      selectedSkillNames: ["user-a", "project-a"]
+    });
+
+    useAgentStore.getState().selectAllUserSkills();
+    useAgentStore.getState().selectAllUserSkills();
+
+    expect(useAgentStore.getState().selectedSkillNames).toEqual([
+      "user-a",
+      "project-a",
+      "user-b"
+    ]);
+  });
+
   it("keeps legacy derived plan data hidden when no plan event was emitted", () => {
     useAgentStore.setState({
       plan: [

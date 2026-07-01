@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
-import { Shield, Wrench, RefreshCw, AlertCircle, Check } from "lucide-react";
+import { Shield, Wrench, RefreshCw, AlertCircle, Check, Sparkles } from "lucide-react";
 
 export default function SkillSelector() {
   const store = useAgentStore();
@@ -58,51 +58,68 @@ export default function SkillSelector() {
         type="button"
         onClick={() => setOpen(!open)}
         disabled={isRunning}
-        className={`inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium transition-colors
-          ${isRunning ? "opacity-50 cursor-not-allowed" : "hover:bg-white/10"}
-          ${skillsError ? "text-amber-400" : "text-gray-300"}
-          ${open ? "bg-white/10" : ""}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        className={`focus-ring inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[10.5px] transition
+          ${isRunning ? "cursor-not-allowed opacity-50" : "hover:border-primary/25 hover:text-primary"}
+          ${skillsError ? "border-amber-400/20 bg-amber-400/10 text-amber-400" : "border-white/[0.09] bg-white/[0.035] text-white/48"}
+          ${open ? "border-primary/30 bg-primary/10 text-primary" : ""}`}
         title="选择技能"
       >
         {skillsError ? (
           <AlertCircle className="h-3.5 w-3.5 text-amber-400" />
         ) : (
-          <Wrench className="h-3.5 w-3.5" />
+          <Wrench className="h-3 w-3" />
         )}
         <span>技能</span>
         {!skillsLoading && availableSkills.length > 0 && (
-          <span className="text-[#F3A04C]">{selectedCount}</span>
+          <span className={selectedCount > 0 ? "text-primary" : "text-white/30"}>{selectedCount}</span>
         )}
         {hasProjectSelected && (
-          <Shield className="h-3 w-3 text-amber-500/70" />
+          <Shield className="h-3 w-3 text-primary/70" />
         )}
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-0 mb-2 w-80 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-50">
+        <div
+          role="dialog"
+          aria-label="选择技能"
+          className="absolute bottom-full left-0 z-50 mb-3 w-[356px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[16px] border border-white/[0.1] bg-[#151518]/[0.98] shadow-[0_24px_70px_rgba(0,0,0,.52),inset_0_1px_0_rgba(255,255,255,.045)] backdrop-blur-xl"
+        >
           {/* Header */}
-          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700">
-            <span className="text-sm font-medium text-gray-200">
-              技能 ({selectedCount}/{availableSkills.length})
-            </span>
+          <div className="flex items-center justify-between border-b border-white/[0.07] px-4 py-3.5">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-primary/20 bg-primary/10 text-primary">
+                <Sparkles size={14} />
+              </span>
+              <div>
+                <div className="text-[13px] font-medium text-white/90">选择技能</div>
+                <div className="mt-0.5 text-[10.5px] text-white/35">为本次任务添加专业能力</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-1 font-mono text-[10px] text-white/40">
+                {selectedCount} / {availableSkills.length}
+              </span>
             <button
               type="button"
               onClick={handleRefresh}
               disabled={skillsLoading}
-              className="p-1 rounded hover:bg-white/10 text-gray-400 disabled:opacity-50"
+                className="focus-ring flex h-7 w-7 items-center justify-center rounded-[8px] text-white/35 transition hover:bg-white/[0.06] hover:text-white/70 disabled:opacity-50"
               title="刷新"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${skillsLoading ? "animate-spin" : ""}`} />
             </button>
+            </div>
           </div>
 
           {/* Content */}
-          <div className="max-h-64 overflow-y-auto p-2 space-y-1">
+          <div className="max-h-[320px] space-y-4 overflow-y-auto p-3">
             {skillsLoading && (
-              <div className="text-xs text-gray-500 text-center py-4">加载中...</div>
+              <div className="py-8 text-center text-xs text-white/35">加载中...</div>
             )}
             {!skillsLoading && skillsError && (
-              <div className="text-xs text-amber-400 text-center py-4">
+              <div className="py-8 text-center text-xs text-amber-400">
                 {skillsError}
                 <button
                   type="button"
@@ -114,82 +131,89 @@ export default function SkillSelector() {
               </div>
             )}
             {!skillsLoading && !skillsError && availableSkills.length === 0 && (
-              <div className="text-xs text-gray-500 text-center py-4">暂无可用技能</div>
+              <div className="py-8 text-center text-xs text-white/35">暂无可用技能</div>
             )}
             {!skillsLoading && !skillsError && availableSkills.length > 0 && (
               <>
                 {/* User skills group */}
                 {userSkills.length > 0 && (
                   <div>
-                    <div className="flex items-center justify-between px-1 py-1">
-                      <span className="text-[10px] uppercase tracking-wider text-gray-500">用户技能</span>
+                    <div className="mb-1.5 flex items-center justify-between px-1">
+                      <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-white/30">用户技能</span>
+                      <span className="text-[10px] text-white/20">{userSkills.length} 项</span>
                     </div>
-                    {userSkills.map((skill) => (
+                    <div className="space-y-1">
+                      {userSkills.map((skill) => (
                       <label
                         key={skill.name}
-                        className={`flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors
-                          ${isRunning ? "cursor-not-allowed opacity-60" : "hover:bg-white/5"}
-                          ${selectedSkillNames.includes(skill.name) ? "bg-white/5" : ""}`}
+                        className={`group flex cursor-pointer items-start gap-2.5 rounded-[10px] border px-2.5 py-2.5 transition
+                          ${isRunning ? "cursor-not-allowed opacity-60" : "hover:border-white/[0.1] hover:bg-white/[0.04]"}
+                          ${selectedSkillNames.includes(skill.name) ? "border-primary/20 bg-primary/[0.075]" : "border-transparent"}`}
                       >
                         <input
                           type="checkbox"
                           checked={selectedSkillNames.includes(skill.name)}
                           onChange={() => toggleSkill(skill.name)}
                           disabled={isRunning}
-                          className="mt-0.5 h-3.5 w-3.5 rounded border-gray-600 bg-gray-800
-                            text-[#F3A04C] focus:ring-[#F3A04C] focus:ring-offset-0"
+                          className="peer sr-only"
                         />
+                        <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] border transition
+                          ${selectedSkillNames.includes(skill.name) ? "border-primary bg-primary text-primary-foreground" : "border-white/20 bg-white/[0.035] text-transparent group-hover:border-white/35"}`}>
+                          <Check size={11} strokeWidth={3} />
+                        </span>
                         <div className="flex-1 min-w-0">
-                          <div className="text-xs font-medium text-gray-200 truncate">{skill.name}</div>
+                          <div className="truncate text-[12px] font-medium text-white/82">{skill.name}</div>
                           {skill.description && (
-                            <div className="text-[11px] text-gray-500 truncate">{skill.description}</div>
+                            <div className="mt-0.5 truncate text-[10.5px] leading-4 text-white/32">{skill.description}</div>
                           )}
                         </div>
-                        <Check
-                          className={`h-3.5 w-3.5 mt-0.5 flex-shrink-0
-                            ${selectedSkillNames.includes(skill.name) ? "text-[#F3A04C]" : "text-transparent"}`}
-                        />
                       </label>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 )}
 
                 {/* Project skills group */}
                 {projectSkills.length > 0 && (
                   <div>
-                    <div className="flex items-center gap-2 px-1 py-1 mt-1">
-                      <span className="text-[10px] uppercase tracking-wider text-gray-500">项目技能</span>
-                      <span className="text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400">
+                    <div className="mb-1.5 flex items-center gap-2 px-1">
+                      <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-white/30">项目技能</span>
+                      <span className="rounded-full border border-primary/15 bg-primary/10 px-1.5 py-0.5 text-[9px] text-primary/80">
                         需审批
                       </span>
+                      <span className="ml-auto text-[10px] text-white/20">{projectSkills.length} 项</span>
                     </div>
-                    {projectSkills.map((skill) => (
+                    <div className="space-y-1">
+                      {projectSkills.map((skill) => (
                       <label
                         key={skill.name}
-                        className={`flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors
-                          ${isRunning ? "cursor-not-allowed opacity-60" : "hover:bg-white/5"}
-                          ${selectedSkillNames.includes(skill.name) ? "bg-white/5" : ""}`}
+                        className={`group flex cursor-pointer items-start gap-2.5 rounded-[10px] border px-2.5 py-2.5 transition
+                          ${isRunning ? "cursor-not-allowed opacity-60" : "hover:border-white/[0.1] hover:bg-white/[0.04]"}
+                          ${selectedSkillNames.includes(skill.name) ? "border-primary/20 bg-primary/[0.075]" : "border-transparent"}`}
                       >
                         <input
                           type="checkbox"
                           checked={selectedSkillNames.includes(skill.name)}
                           onChange={() => toggleSkill(skill.name)}
                           disabled={isRunning}
-                          className="mt-0.5 h-3.5 w-3.5 rounded border-gray-600 bg-gray-800
-                            text-[#F3A04C] focus:ring-[#F3A04C] focus:ring-offset-0"
+                          className="peer sr-only"
                         />
+                        <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] border transition
+                          ${selectedSkillNames.includes(skill.name) ? "border-primary bg-primary text-primary-foreground" : "border-white/20 bg-white/[0.035] text-transparent group-hover:border-white/35"}`}>
+                          <Check size={11} strokeWidth={3} />
+                        </span>
                         <div className="flex-1 min-w-0">
-                          <div className="text-xs font-medium text-gray-200 truncate">{skill.name}</div>
+                          <div className="flex items-center gap-1.5">
+                            <div className="truncate text-[12px] font-medium text-white/82">{skill.name}</div>
+                            <Shield size={10} className="shrink-0 text-primary/45" />
+                          </div>
                           {skill.description && (
-                            <div className="text-[11px] text-gray-500 truncate">{skill.description}</div>
+                            <div className="mt-0.5 truncate text-[10.5px] leading-4 text-white/32">{skill.description}</div>
                           )}
                         </div>
-                        <Check
-                          className={`h-3.5 w-3.5 mt-0.5 flex-shrink-0
-                            ${selectedSkillNames.includes(skill.name) ? "text-[#F3A04C]" : "text-transparent"}`}
-                        />
                       </label>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 )}
               </>
@@ -198,12 +222,12 @@ export default function SkillSelector() {
 
           {/* Footer actions */}
           {!skillsLoading && !skillsError && availableSkills.length > 0 && (
-            <div className="flex items-center gap-2 px-3 py-2 border-t border-gray-700">
+            <div className="flex items-center gap-1 border-t border-white/[0.07] bg-black/10 px-3 py-2.5">
               <button
                 type="button"
                 onClick={selectAllUserSkills}
                 disabled={isRunning}
-                className="text-[11px] text-gray-400 hover:text-gray-200 disabled:opacity-50 transition-colors"
+                className="focus-ring rounded-[7px] px-2 py-1.5 text-[10.5px] text-white/40 transition hover:bg-white/[0.05] hover:text-white/75 disabled:opacity-50"
               >
                 全选用户技能
               </button>
@@ -211,7 +235,7 @@ export default function SkillSelector() {
                 type="button"
                 onClick={clearSelectedSkills}
                 disabled={isRunning}
-                className="text-[11px] text-gray-500 hover:text-gray-300 disabled:opacity-50 transition-colors"
+                className="focus-ring rounded-[7px] px-2 py-1.5 text-[10.5px] text-white/28 transition hover:bg-white/[0.05] hover:text-white/60 disabled:opacity-50"
               >
                 清空选择
               </button>

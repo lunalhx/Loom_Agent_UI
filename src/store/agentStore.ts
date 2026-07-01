@@ -755,13 +755,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   selectAllUserSkills: () => {
     set((state) => {
-      const projectNames = new Set(
-        state.availableSkills.filter((s) => s.source === "project").map((s) => s.name)
-      );
-      const selected = [
-        ...state.selectedSkillNames.filter((n) => !projectNames.has(n)),
-        ...state.availableSkills.filter((s) => s.source === "user").map((s) => s.name)
-      ];
+      const userNames = state.availableSkills
+        .filter((s) => s.source === "user")
+        .map((s) => s.name);
+      const selected = [...new Set([...state.selectedSkillNames, ...userNames])];
       const w = state.skillsWorkspace || state.workspace.trim();
       if (w) {
         const nextPrefs = readSkillPreferences();
