@@ -5,6 +5,7 @@ import { useAgentStore } from "./agentStore";
 describe("agent store event reducer", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   beforeEach(() => {
@@ -673,21 +674,83 @@ describe("agent store event reducer", () => {
       });
     });
 
-    it("sets loading state and stores response on loadUndo success", async () => {
-      const mockResponse = {
+    it("keeps the current response visible while refreshing undo state", async () => {
+      const currentResponse = {
         runId: "run-1",
-        status: "READY" as const,
-        canUndo: true,
-        snapshotVersion: 3,
+        status: "OPEN" as const,
+        canUndo: false,
+        snapshotVersion: 2,
         changedFiles: [{ path: "src/a.ts", changeType: "MODIFIED" as const }],
         changedFileCount: 1
       };
-      const { getRunUndo } = await import("@/lib/api");
-      const orig = (getRunUndo as ReturnType<typeof vi.fn>);
-      // We'll verify state transitions through the action
-      // For now, verify the store starts clean
-      expect(useAgentStore.getState().undoByRunId).toEqual({});
-      expect(useAgentStore.getState().undoDialogRunId).toBeUndefined();
+      const nextResponse = { ...currentResponse, status: "READY" as const, canUndo: true, snapshotVersion: 3 };
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ code: "0000", data: nextResponse }), {
+          headers: { "Content-Type": "application/json" }
+        })
+      ));
+      useAgentStore.setState({
+        undoByRunId: { "run-1": { loading: false, executing: false, response: currentResponse } }
+      });
+
+      const request = useAgentStore.getState().loadUndo("run-1");
+
+      expect(useAgentStore.getState().undoByRunId["run-1"]?.loading).toBe(false);
+      expect(useAgentStore.getState().undoByRunId["run-1"]?.response).toEqual(currentResponse);
+      await request;
+      expect(useAgentStore.getState().undoByRunId["run-1"]?.response).toEqual(nextResponse);
+    });
+
+    it("ignores an older undo response that finishes after a newer query", async () => {
+      let resolveFirst!: (response: Response) => void;
+      let resolveSecond!: (response: Response) => void;
+      const fetchMock = vi.fn()
+        .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveFirst = resolve; }))
+        .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveSecond = resolve; }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const firstRequest = useAgentStore.getState().loadUndo("run-1");
+      const secondRequest = useAgentStore.getState().loadUndo("run-1");
+      const readyResponse = {
+        runId: "run-1",
+        status: "READY" as const,
+        canUndo: true,
+        snapshotVersion: 2,
+        changedFiles: [],
+        changedFileCount: 0
+      };
+      const openResponse = { ...readyResponse, status: "OPEN" as const, canUndo: false, snapshotVersion: 1 };
+
+      resolveSecond(new Response(JSON.stringify({ code: "0000", data: readyResponse })));
+      await secondRequest;
+      resolveFirst(new Response(JSON.stringify({ code: "0000", data: openResponse })));
+      await firstRequest;
+
+      expect(useAgentStore.getState().undoByRunId["run-1"]?.response).toEqual(readyResponse);
+    });
+
+    it("uses one bounded polling chain for an open undo snapshot", async () => {
+      vi.useFakeTimers();
+      const openResponse = {
+        runId: "run-1",
+        status: "OPEN" as const,
+        canUndo: false,
+        snapshotVersion: 1,
+        changedFiles: [],
+        changedFileCount: 0
+      };
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ code: "0000", data: openResponse }))
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      await useAgentStore.getState().loadUndo("run-1");
+      await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(fetchMock).toHaveBeenCalledTimes(4);
     });
 
     it("openUndoDialog sets runId and triggers load", () => {

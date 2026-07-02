@@ -147,6 +147,10 @@ export type UndoViewState = {
   error?: string;
 };
 
+type UndoLoadOptions = {
+  fromPoll?: boolean;
+};
+
 export type BackgroundTaskState = BackgroundTask & {
   stdoutChunks: string[];
   stderrChunks: string[];
@@ -245,7 +249,7 @@ type AgentState = {
   receiveEvent: (event: AgentStreamEvent, sessionId?: string) => void;
   stopRun: () => void;
   decide: (approvalId: string, decision: AgentApprovalDecisionRequest["decision"], reason?: string) => Promise<void>;
-  loadUndo: (runId: string) => Promise<void>;
+  loadUndo: (runId: string, options?: UndoLoadOptions) => Promise<void>;
   loadUndoStack: (runIds: string[]) => Promise<void>;
   openUndoDialog: (runId: string) => void;
   closeUndoDialog: () => void;
@@ -534,29 +538,31 @@ const undoErrorLabels: Record<string, string> = {
   undo_recovery_required: "自动恢复失败，需要人工检查 Git 状态"
 };
 
+const undoPollDelays = [250, 500, 1000];
+const undoPolls = new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>();
+const undoRequestVersions = new Map<string, number>();
+
+function resetUndoPolling(runId: string) {
+  const poll = undoPolls.get(runId);
+  if (poll?.timer) clearTimeout(poll.timer);
+  undoPolls.delete(runId);
+}
+
 function pollUndoUntilReady(runId: string) {
-  const delays = [250, 500, 1000];
-  let attempts = 0;
+  const poll = undoPolls.get(runId) || { attempts: 0 };
+  if (poll.timer || poll.attempts >= undoPollDelays.length) return;
 
-  const tryPoll = () => {
+  poll.timer = setTimeout(() => {
     const current = useAgentStore.getState().undoByRunId[runId];
-    if (current?.response?.status !== "OPEN" && current?.response?.status !== "SUSPENDED" && current?.response?.status !== undefined) return;
-    if (attempts >= delays.length) return;
-
-    setTimeout(() => {
-      const latest = useAgentStore.getState().undoByRunId[runId];
-      if (latest?.response?.status !== "OPEN" && latest?.response?.status !== "SUSPENDED") return;
-      attempts++;
-      void useAgentStore.getState().loadUndo(runId).then(() => {
-        const after = useAgentStore.getState().undoByRunId[runId];
-        if ((after?.response?.status === "OPEN" || after?.response?.status === "SUSPENDED") && attempts < delays.length) {
-          tryPoll();
-        }
-      });
-    }, delays[attempts]);
-  };
-
-  tryPoll();
+    if (current?.response?.status !== "OPEN" && current?.response?.status !== "SUSPENDED") {
+      resetUndoPolling(runId);
+      return;
+    }
+    poll.timer = undefined;
+    poll.attempts++;
+    void useAgentStore.getState().loadUndo(runId, { fromPoll: true });
+  }, undoPollDelays[poll.attempts]);
+  undoPolls.set(runId, poll);
 }
 
 // --- Conversation deletion polling ---
@@ -1635,23 +1641,39 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  loadUndo: async (runId) => {
+  loadUndo: async (runId, options) => {
     if (!runId) return;
+    if (!options?.fromPoll) resetUndoPolling(runId);
+    const requestVersion = (undoRequestVersions.get(runId) || 0) + 1;
+    undoRequestVersions.set(runId, requestVersion);
     set((state) => ({
       undoByRunId: {
         ...state.undoByRunId,
-        [runId]: { ...(state.undoByRunId[runId] || {}), loading: true, error: undefined, errorCode: undefined }
+        [runId]: {
+          ...(state.undoByRunId[runId] || {}),
+          loading: !state.undoByRunId[runId]?.response,
+          error: undefined,
+          errorCode: undefined
+        }
       }
     }));
     try {
       const response = await getRunUndo(runId);
+      if (undoRequestVersions.get(runId) !== requestVersion) return;
       set((state) => ({
-        undoByRunId: { ...state.undoByRunId, [runId]: { loading: false, executing: false, response } }
+        undoByRunId: {
+          ...state.undoByRunId,
+          [runId]: { ...(state.undoByRunId[runId] || {}), loading: false, executing: false, response }
+        }
       }));
       if (response.status === "OPEN" || response.status === "SUSPENDED") {
         pollUndoUntilReady(runId);
+      } else {
+        resetUndoPolling(runId);
       }
     } catch (error) {
+      if (undoRequestVersions.get(runId) !== requestVersion) return;
+      resetUndoPolling(runId);
       if (error instanceof FeatureMissingError) {
         set({ undoFeatureMissing: true });
         return;
@@ -1661,6 +1683,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         undoByRunId: {
           ...state.undoByRunId,
           [runId]: {
+            ...(state.undoByRunId[runId] || {}),
             loading: false,
             executing: false,
             errorCode: apiError?.code,
