@@ -2,7 +2,7 @@ import { AlertTriangle, CheckCircle2, FileDiff, Loader2, Undo2 } from "lucide-re
 import { useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import type { RunHistoryItem, StepState, UndoViewState } from "@/store/agentStore";
-import type { AgentStreamEvent } from "@/types/backend";
+import type { AgentStreamEvent, AgentUsageSummary } from "@/types/backend";
 import { AnswerMarkdown } from "./AnswerMarkdown";
 import { DiffApprovalCard } from "./DiffApprovalCard";
 import { UndoConfirmDialog } from "./UndoConfirmDialog";
@@ -165,13 +165,19 @@ function AgentStepsCard() {
   return <ProcessCard steps={steps} />;
 }
 
+function formatCacheHitRate(rate: number | null | undefined): string {
+  if (rate === null || rate === undefined) return "--";
+  return `${(rate * 100).toFixed(1)}%`;
+}
+
 function FinalAnswerCard({
   content,
   elapsedMs,
   iterationCount,
   toolCallCount,
   runId,
-  undoViewState
+  undoViewState,
+  usage
 }: {
   content: string;
   elapsedMs: number;
@@ -179,6 +185,7 @@ function FinalAnswerCard({
   toolCallCount: number;
   runId?: string;
   undoViewState?: UndoViewState;
+  usage?: AgentUsageSummary;
 }) {
   const openUndoDialog = useAgentStore((state) => state.openUndoDialog);
   const undoFeatureMissing = useAgentStore((state) => state.undoFeatureMissing);
@@ -208,6 +215,12 @@ function FinalAnswerCard({
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-white/[0.075] pt-3 font-mono text-[10.5px] text-white/34">
           <span>耗时 {elapsedMs ? `${(elapsedMs / 1000).toFixed(1)}s` : "—"}</span>
+          {usage && usage.totalTokens !== undefined ? (
+            <>
+              <span>tokens {usage.totalTokens.toLocaleString()}</span>
+              <span>缓存命中 {formatCacheHitRate(usage.cacheHitRate)}</span>
+            </>
+          ) : null}
           <span>{iterationCount} 次迭代</span>
           <span>{toolCallCount} 次工具调用</span>
           {showUndo ? (
@@ -264,7 +277,9 @@ function HistoryRun({ run }: { run: RunHistoryItem }) {
   const iterationCount = steps.length || 1;
   const toolCallCount = events.filter((entry) => entry.event.type === "tool_call").length;
   const undoByRunId = useAgentStore((state) => state.undoByRunId);
+  const usageByRunId = useAgentStore((state) => state.usageByRunId);
   const undoViewState = run.runId ? undoByRunId[run.runId] : undefined;
+  const usage = run.runId ? usageByRunId[run.runId] : undefined;
 
   return (
     <>
@@ -278,6 +293,7 @@ function HistoryRun({ run }: { run: RunHistoryItem }) {
           toolCallCount={toolCallCount}
           runId={run.runId}
           undoViewState={undoViewState}
+          usage={usage}
         />
       ) : null}
       {run.error ? <RunErrorCard error={run.error} /> : null}
@@ -329,6 +345,7 @@ export function Flow() {
   const trace = useAgentStore((state) => state.trace);
   const runHistory = useAgentStore((state) => state.runHistory);
   const undoByRunId = useAgentStore((state) => state.undoByRunId);
+  const usageByRunId = useAgentStore((state) => state.usageByRunId);
   const runId = useAgentStore((state) => state.runId);
   const approvalList = Object.values(approvals).filter((approval) => ["pending", "approving", "rejecting"].includes(approval.status));
   const activeRun = status !== "IDLE";
@@ -359,7 +376,7 @@ export function Flow() {
           <EventMarker key={id} event={event} />
         ))}
 
-        {answer ? <FinalAnswerCard content={answer} elapsedMs={elapsedMs} iterationCount={iterationCount} toolCallCount={toolCallCount} runId={runId} undoViewState={runId ? undoByRunId[runId] : undefined} /> : null}
+        {answer ? <FinalAnswerCard content={answer} elapsedMs={elapsedMs} iterationCount={iterationCount} toolCallCount={toolCallCount} runId={runId} undoViewState={runId ? undoByRunId[runId] : undefined} usage={runId ? usageByRunId[runId] : undefined} /> : null}
 
         {error ? <RunErrorCard error={error} /> : null}
 

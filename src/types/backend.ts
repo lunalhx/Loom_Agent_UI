@@ -223,6 +223,17 @@ export type BackgroundTaskDetail = BackgroundTask & {
   stderrEof: boolean;
 };
 
+export type AgentUsageSummary = {
+  runId?: string;
+  traceId?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cacheHitTokens?: number;
+  cacheMissTokens?: number;
+  cacheHitRate?: number | null;
+};
+
 export type AgentStreamEvent = {
   type: AgentEventType;
   /**
@@ -273,6 +284,7 @@ export type AgentStreamEvent = {
   */
   diff?: DiffPayload;
   backgroundTask?: BackgroundTask;
+  usage?: AgentUsageSummary | null;
 };
 
 export type AgentAskRequest = {

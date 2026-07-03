@@ -5,6 +5,7 @@ import type {
   AgentStreamEvent,
   AgentUndoRequest,
   AgentUndoResponse,
+  AgentUsageSummary,
   AgentWorkspaceRequest,
   AgentWorkspaceResponse,
   AgentWorkspaceTreeRequest,
@@ -255,6 +256,11 @@ export async function fetchBackgroundTaskDetail(
   const url = `${API_BASE}/agent/code/runs/${runId}/background-tasks/${taskId}${qs ? `?${qs}` : ""}`;
   const response = await fetch(url);
   return parseApiResponse<BackgroundTaskDetail>(response);
+}
+
+export async function getRunUsage(runId: string): Promise<AgentUsageSummary> {
+  const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/usage`);
+  return parseApiResponse<AgentUsageSummary>(response);
 }
 
 export async function cancelBackgroundTask(runId: string, taskId: string): Promise<boolean> {

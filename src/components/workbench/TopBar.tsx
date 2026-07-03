@@ -4,7 +4,25 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shortId } from "@/lib/utils";
 import { useAgentStore } from "@/store/agentStore";
+import type { AgentUsageSummary } from "@/types/backend";
 import { statusColor, statusLabel } from "./status";
+
+function formatCacheHitRate(rate: number | null | undefined): string {
+  if (rate === null || rate === undefined) return "--";
+  return `${(rate * 100).toFixed(1)}%`;
+}
+
+function UsageBadge({ usage }: { usage?: AgentUsageSummary }) {
+  if (!usage || usage.totalTokens === undefined) {
+    return <Badge className="hidden md:inline-flex">tokens n/a</Badge>;
+  }
+  return (
+    <>
+      <Badge className="hidden md:inline-flex">tokens {usage.totalTokens.toLocaleString()}</Badge>
+      <Badge className="hidden md:inline-flex">缓存 {formatCacheHitRate(usage.cacheHitRate)}</Badge>
+    </>
+  );
+}
 
 export function TopBar({
   leftPanelOpen,
@@ -20,8 +38,10 @@ export function TopBar({
   const status = useAgentStore((state) => state.status);
   const workspace = useAgentStore((state) => state.workspace);
   const requestId = useAgentStore((state) => state.requestId);
-  const usage = useAgentStore((state) => state.usage);
+  const runId = useAgentStore((state) => state.runId);
+  const usageByRunId = useAgentStore((state) => state.usageByRunId);
   const backgroundTasks = useAgentStore((state) => state.backgroundTasks);
+  const usage = runId ? usageByRunId[runId] : undefined;
 
   const activeTaskCount = backgroundTasks.filter(
     (t) => t.status === "STARTING" || t.status === "RUNNING"
@@ -52,7 +72,7 @@ export function TopBar({
       </div>
 
       <div className="flex items-center gap-2">
-        <Badge className="hidden md:inline-flex">tokens {usage?.totalTokens ?? "n/a"}</Badge>
+        <UsageBadge usage={usage} />
         {activeTaskCount > 0 ? (
           <Badge className="hidden md:inline-flex gap-1 border-amber-400/30 bg-amber-400/10 text-amber-300">
             <Loader2 size={11} className="animate-spin" />

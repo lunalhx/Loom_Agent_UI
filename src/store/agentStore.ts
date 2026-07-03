@@ -11,6 +11,7 @@ import {
   cancelAgentRun,
   deleteConversation,
   getConversationDeletionStatus,
+  getRunUsage,
   listConversations,
   fetchBackgroundTasks,
   fetchBackgroundTaskDetail,
@@ -28,6 +29,7 @@ import type {
   AgentStreamEvent,
   AgentTool,
   AgentUndoResponse,
+  AgentUsageSummary,
   AgentWorkspaceTreeNode,
   BackgroundTask,
   BackgroundTaskDetail,
@@ -94,6 +96,7 @@ export type RunHistoryItem = {
   answer?: string;
   error?: string;
   skillNames?: string[];
+  usage?: AgentUsageSummary;
 };
 
 export type Session = {
@@ -121,6 +124,7 @@ export type Session = {
   deletionStatus?: ConversationDeletionStatus;
   deletionError?: string;
   backgroundTasks?: BackgroundTaskState[];
+  usageByRunId?: Record<string, AgentUsageSummary>;
 };
 
 export type LocalFileTarget = {
@@ -214,7 +218,7 @@ type AgentState = {
   selectedLocalFolder?: LocalFolderTarget;
   answer?: string;
   error?: string;
-  usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; costUsd?: number };
+  usageByRunId: Record<string, AgentUsageSummary>;
   sessions: Session[];
   streams: Record<string, StreamHandle>;
   undoByRunId: Record<string, UndoViewState>;
@@ -259,6 +263,8 @@ type AgentState = {
   fetchTaskDetail: (runId: string, taskId: string) => Promise<void>;
   cancelBackgroundTask: (runId: string, taskId: string) => Promise<void>;
   selectBackgroundTask: (taskId?: string) => void;
+  loadRunUsage: (runId: string) => Promise<void>;
+  loadRunUsageStack: (runIds: string[]) => Promise<void>;
 };
 
 const sessionStorageKey = "loom-agent:sessions";
@@ -308,6 +314,7 @@ function snapshotSession(state: AgentState, patch: Partial<AgentState> = {}): Se
     error,
     runHistory: patch.runHistory ?? state.runHistory,
     undoByRunId: patch.undoByRunId ?? state.undoByRunId,
+    usageByRunId: patch.usageByRunId ?? state.usageByRunId,
     backgroundTasks: (patch.backgroundTasks ?? state.backgroundTasks).map((t) => ({
       ...t,
       stdoutChunks: [],
@@ -348,6 +355,7 @@ function sessionViewState(state: AgentState, session: Session): AgentState {
     recentFiles: session.recentFiles || [],
     runHistory: session.runHistory || [],
     undoByRunId: session.undoByRunId || {},
+    usageByRunId: session.usageByRunId || {},
     backgroundTasks: session.backgroundTasks || []
   };
 }
@@ -649,6 +657,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   approvals: {},
   recentFiles: [],
   runHistory: [],
+  usageByRunId: {},
   sessions: typeof localStorage === "undefined" ? [] : readSessions(),
   undoByRunId: {},
   undoFeatureMissing: false,
@@ -705,6 +714,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         undoByRunId: {},
         undoDialogRunId: undefined,
         undoFeatureMissing: false,
+        usageByRunId: {},
         backgroundTasks: [],
         backgroundTasksLoading: false,
         selectedBackgroundTaskId: undefined
@@ -733,6 +743,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       setTimeout(() => {
         void useAgentStore.getState().loadUndoStack(idsToQuery);
       }, 0);
+      queueMicrotask(() => {
+        void useAgentStore.getState().loadRunUsageStack(idsToQuery);
+      });
       if (currentRunId) {
         setTimeout(() => {
           void useAgentStore.getState().fetchBackgroundTasks(currentRunId);
@@ -770,6 +783,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         recentFiles: restoredSession.recentFiles || [],
         runHistory: restoredSession.runHistory || [],
         undoByRunId: sanitizedUndo,
+        usageByRunId: restoredSession.usageByRunId || {},
         undoFeatureMissing: false,
         backgroundTasks: restoredSession.backgroundTasks || [],
         backgroundTasksLoading: false,
@@ -1240,6 +1254,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       let conversationId = eventState.conversationId;
       let workspace = eventState.workspace;
       let runId = eventState.runId;
+      let usageByRunId = eventState.usageByRunId;
 
       runId = event.runId || runId;
       requestId = event.requestId || requestId;
@@ -1488,6 +1503,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
       if (event.type === "done") {
         nextStatus = "COMPLETED";
+        if (event.usage && (event.usage.totalTokens !== undefined || event.usage.inputTokens !== undefined)) {
+          const usageRunId = (event.usage.runId || runId || "") as string;
+          if (usageRunId) {
+            usageByRunId = { ...usageByRunId, [usageRunId]: event.usage };
+          }
+        }
         trace = [
           ...trace,
           {
@@ -1533,7 +1554,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         runId,
         requestId,
         conversationId,
-        workspace
+        workspace,
+        usageByRunId
       };
 
       const sessions = upsertSessionSnapshot(state.sessions, snapshotSession(eventState, nextState));
@@ -1855,6 +1877,33 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set((state) => ({
       selectedBackgroundTaskId: state.selectedBackgroundTaskId === taskId ? undefined : taskId
     }));
+  },
+
+  loadRunUsage: async (runId) => {
+    if (!runId) return;
+    try {
+      const usage = await getRunUsage(runId);
+      set((state) => {
+        const usageByRunId = { ...state.usageByRunId, [runId]: usage };
+        return {
+          usageByRunId,
+          sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, { usageByRunId }))
+        };
+      });
+    } catch {
+      // Usage endpoint is best-effort; failures are silent.
+    }
+  },
+
+  loadRunUsageStack: async (runIds) => {
+    const seen = new Set<string>();
+    const unique = runIds.filter(Boolean).filter((id) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (unique.length === 0) return;
+    await Promise.allSettled(unique.map((id) => get().loadRunUsage(id)));
   }
 }));
 
