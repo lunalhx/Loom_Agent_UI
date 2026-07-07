@@ -15,10 +15,18 @@ function sessionStatus(status?: RunStatus) {
       return { label: "运行中", dot: "bg-emerald-400", pulse: true };
     case "WAITING_APPROVAL":
       return { label: "待审批", dot: "bg-amber-400", pulse: false };
+    case "WAITING_USER_INPUT":
+      return { label: "等待输入", dot: "bg-amber-400", pulse: true };
     case "COMPLETED":
       return { label: "已完成", dot: "bg-emerald-500/80", pulse: false };
+    case "FAILED":
+      return { label: "失败", dot: "bg-red-400", pulse: false };
     case "ERROR":
       return { label: "失败", dot: "bg-red-400", pulse: false };
+    case "BUDGET_EXCEEDED":
+      return { label: "预算耗尽", dot: "bg-amber-500", pulse: false };
+    case "CANCELLED":
+      return { label: "已取消", dot: "bg-white/30", pulse: false };
     case "DISCONNECTED":
       return { label: "已断开", dot: "bg-red-400/80", pulse: false };
     case "CANCELLED_LOCAL":

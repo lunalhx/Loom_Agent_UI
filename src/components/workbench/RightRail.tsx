@@ -498,8 +498,9 @@ export function RightRail({ open }: { open: boolean }) {
   const undoByRunId = useAgentStore((state) => state.undoByRunId);
   const backgroundTasks = useAgentStore((state) => state.backgroundTasks);
   const [tab, setTab] = useState<RightTab>("trace");
-  const hasPlan = planTriggered && plan.length > 0;
-  const completed = plan.filter((item) => item.status === "done" || item.status === "skipped").length;
+  const visiblePlan = useMemo(() => plan.filter((item) => item.status !== "skipped"), [plan]);
+  const hasPlan = planTriggered && visiblePlan.length > 0;
+  const completed = visiblePlan.filter((item) => item.status === "done").length;
   const traceGroups = useMemo(() => {
     const groups = new Map<number, TraceItem[]>();
     trace.slice(-100).forEach((item) => {
@@ -525,13 +526,13 @@ export function RightRail({ open }: { open: boolean }) {
           <div className="mb-3 flex items-center">
             <h2 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-white/48">执行计划</h2>
             <span className="ml-auto rounded-full bg-white/[0.055] px-2 py-0.5 font-mono text-[10px] tabular-nums text-white/38">
-              {hasPlan ? `${completed}/${plan.length}` : "—"}
+              {hasPlan ? `${completed}/${visiblePlan.length}` : "—"}
             </span>
           </div>
 
           {hasPlan ? (
             <div className="max-h-[250px] space-y-1 overflow-auto">
-              {plan.map((item) => (
+              {visiblePlan.map((item) => (
                 <div
                   key={item.id}
                   className={cn(

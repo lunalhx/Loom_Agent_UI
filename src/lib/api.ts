@@ -2,6 +2,8 @@ import type {
   AgentApprovalDecisionRequest,
   AgentApprovalResponse,
   AgentAskRequest,
+  AgentRunStatusResponse,
+  AgentRuntimeInfoResponse,
   AgentStreamEvent,
   AgentUndoRequest,
   AgentUndoResponse,
@@ -26,6 +28,20 @@ export class FeatureMissingError extends Error {
   }
 }
 
+export class RunNotFoundError extends Error {
+  code: string;
+  runId: string;
+  httpStatus: number;
+
+  constructor(runId: string, code: string, info: string, httpStatus = 404) {
+    super(info || code || `run ${runId} not found`);
+    this.name = "RunNotFoundError";
+    this.code = code;
+    this.runId = runId;
+    this.httpStatus = httpStatus;
+  }
+}
+
 export class ApiRequestError extends Error {
   httpStatus: number;
   code: string;
@@ -44,12 +60,38 @@ export class ApiRequestError extends Error {
 
 const API_BASE = "/api/v1";
 
+/**
+ * Codes that indicate a missing/unimplemented endpoint rather than a generic
+ * 404 from a path that happens to not exist. Keep this list tight so that
+ * business-level 404s (e.g. run_not_found) are still surfaced as
+ * `ApiRequestError`/`RunNotFoundError` and not swallowed as feature gaps.
+ */
+const FEATURE_MISSING_CODES = new Set<string>([
+  "feature_missing",
+  "endpoint_not_implemented"
+]);
+
 async function parseApiResponse<T>(response: globalThis.Response): Promise<T> {
+  const raw = await response.text();
   if (response.status === 404 || response.status === 405) {
-    throw new FeatureMissingError("后端接口不存在或方法不匹配");
+    let code: string | undefined;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as Partial<ApiResponse<T>>;
+        code = typeof parsed?.code === "string" ? parsed.code : undefined;
+      } catch {
+        // body is not JSON; treat as feature missing
+      }
+    }
+    if (!code || FEATURE_MISSING_CODES.has(code)) {
+      throw new FeatureMissingError("后端接口不存在或方法不匹配");
+    }
   }
 
-  const body = (await response.json()) as ApiResponse<T> | T;
+  if (!raw) {
+    throw new ApiRequestError(response.status, "EMPTY_BODY", "后端响应为空");
+  }
+  const body = JSON.parse(raw) as ApiResponse<T> | T;
   if (typeof body === "object" && body && "code" in body) {
     const wrapped = body as ApiResponse<T>;
     if (wrapped.code !== "0000") {
@@ -186,6 +228,56 @@ function dispatchSseEvent(rawEvent: string, handlers: StreamHandlers) {
 export async function getRunUndo(runId: string): Promise<AgentUndoResponse> {
   const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/undo`);
   return parseApiResponse<AgentUndoResponse>(response);
+}
+
+export async function getAgentRuntime(): Promise<AgentRuntimeInfoResponse> {
+  const response = await fetch(`${API_BASE}/agent/code/runtime`);
+  return parseApiResponse<AgentRuntimeInfoResponse>(response);
+}
+
+/**
+ * Fetches the canonical status of a run. When the backend reports the run as
+ * missing (e.g. after a restart lost the in-memory state) it throws
+ * {@link RunNotFoundError} so the store can fall back to a local terminal
+ * state instead of treating the lookup failure as a generic network error.
+ */
+export async function getRunStatus(runId: string): Promise<AgentRunStatusResponse> {
+  if (!runId) {
+    throw new RunNotFoundError(runId, "run_not_found", "run id is required", 404);
+  }
+  const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/status`);
+  if (response.status === 404) {
+    const raw = await response.text().catch(() => "");
+    let code: string | undefined;
+    let info: string | undefined;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as Partial<ApiResponse<unknown>>;
+        code = typeof parsed?.code === "string" ? parsed.code : undefined;
+        info = typeof parsed?.info === "string" ? parsed.info : undefined;
+      } catch {
+        // body is not JSON; keep code undefined so the generic 404 handler
+        // does not misclassify this as a feature gap.
+      }
+    }
+    throw new RunNotFoundError(runId, code || "run_not_found", info || `run ${runId} not found`, response.status);
+  }
+  const status = await parseApiResponse<AgentRunStatusResponse>(response).catch((error: unknown) => {
+    if (error instanceof RunNotFoundError) {
+      throw error;
+    }
+    if (error instanceof ApiRequestError && (error.code === "run_not_found" || error.httpStatus === 404)) {
+      throw new RunNotFoundError(runId, error.code, error.info, error.httpStatus);
+    }
+    if (error instanceof FeatureMissingError) {
+      throw new RunNotFoundError(runId, "run_not_found", `run ${runId} not found`, 404);
+    }
+    throw error;
+  });
+  if (!status || !status.runId) {
+    throw new RunNotFoundError(runId, "run_not_found", `run ${runId} not found`, 404);
+  }
+  return status;
 }
 
 export async function querySkills(workspace?: string): Promise<SkillSummary[]> {

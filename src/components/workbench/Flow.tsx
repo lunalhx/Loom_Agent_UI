@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, FileDiff, Loader2, Undo2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileDiff, Hourglass, Loader2, RotateCcw, Undo2, WifiOff, X } from "lucide-react";
 import { useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import type { RunHistoryItem, StepState, UndoViewState } from "@/store/agentStore";
@@ -217,7 +217,7 @@ function FinalAnswerCard({
           <span>耗时 {elapsedMs ? `${(elapsedMs / 1000).toFixed(1)}s` : "—"}</span>
           {usage && usage.totalTokens !== undefined ? (
             <>
-              <span>tokens {usage.totalTokens.toLocaleString()}</span>
+              <span>本轮 tokens {usage.totalTokens.toLocaleString()}</span>
               <span>缓存命中 {formatCacheHitRate(usage.cacheHitRate)}</span>
             </>
           ) : null}
@@ -256,15 +256,98 @@ function FinalAnswerCard({
   );
 }
 
-function RunErrorCard({ error }: { error: string }) {
+function RunErrorCard({ error, recoverable, onResume }: { error: string; recoverable?: boolean; onResume?: () => void }) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[82%] rounded border border-red-500/35 bg-red-950/20 p-3">
         <div className="mb-1 flex items-center gap-2 font-mono text-sm text-red-300">
           <FileDiff size={15} />
           run error
+          {recoverable ? (
+            <span className="ml-auto rounded-full border border-amber-400/40 bg-amber-400/15 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+              可恢复
+            </span>
+          ) : null}
         </div>
         <div className="text-sm text-muted-foreground">{error}</div>
+        {recoverable && onResume ? (
+          <button
+            type="button"
+            className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-400/40 bg-amber-400/10 px-2.5 py-1 text-[11px] font-medium text-amber-300 transition hover:border-amber-400/60 hover:bg-amber-400/20"
+            onClick={onResume}
+          >
+            <RotateCcw size={11} />
+            恢复运行
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function DisconnectedCard({ onResume, recoverable }: { onResume: () => void; recoverable?: boolean }) {
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[82%] rounded-[12px] border border-amber-400/30 bg-amber-400/[0.06] p-3">
+        <div className="mb-1 flex items-center gap-2 font-mono text-sm text-amber-300">
+          <WifiOff size={15} />
+          连接已断开
+          {recoverable ? (
+            <span className="ml-auto rounded-full border border-amber-400/40 bg-amber-400/15 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+              可恢复
+            </span>
+          ) : null}
+        </div>
+        <div className="text-sm text-white/55">
+          与后端的实时连接中断。如果后端仍在处理该运行，可手动触发恢复（不会重复执行已完成的工具）。
+        </div>
+        <button
+          type="button"
+          className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-400/40 bg-amber-400/15 px-2.5 py-1 text-[11px] font-medium text-amber-300 transition hover:border-amber-400/60 hover:bg-amber-400/25"
+          onClick={onResume}
+        >
+          <RotateCcw size={11} />
+          重新连接
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WaitingForUserInputCard() {
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[82%] rounded-[12px] border border-amber-400/30 bg-amber-400/[0.05] p-3">
+        <div className="mb-1 flex items-center gap-2 font-mono text-sm text-amber-300">
+          <Hourglass size={15} />
+          等待用户输入
+        </div>
+        <div className="text-sm text-white/55">
+          Agent 已暂停，等待你补充信息或确认。
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TerminalStatusCard({ status, message }: { status: "FAILED" | "BUDGET_EXCEEDED" | "CANCELLED"; message?: string }) {
+  const copy = (() => {
+    if (status === "FAILED") {
+      return { label: "运行失败", tone: "text-red-300", border: "border-red-500/35", bg: "bg-red-950/20" };
+    }
+    if (status === "BUDGET_EXCEEDED") {
+      return { label: "预算已耗尽", tone: "text-amber-300", border: "border-amber-500/35", bg: "bg-amber-950/20" };
+    }
+    return { label: "运行已取消", tone: "text-white/65", border: "border-white/15", bg: "bg-white/[0.04]" };
+  })();
+  return (
+    <div className="flex justify-start">
+      <div className={`max-w-[82%] rounded border ${copy.border} ${copy.bg} p-3`}>
+        <div className={`mb-1 flex items-center gap-2 font-mono text-sm ${copy.tone}`}>
+          <X size={15} />
+          {copy.label}
+        </div>
+        {message ? <div className="text-sm text-white/55">{message}</div> : null}
       </div>
     </div>
   );
@@ -341,12 +424,15 @@ export function Flow() {
   const approvals = useAgentStore((state) => state.approvals);
   const answer = useAgentStore((state) => state.answer);
   const error = useAgentStore((state) => state.error);
+  const recoverable = useAgentStore((state) => state.recoverable);
   const events = useAgentStore((state) => state.events);
   const trace = useAgentStore((state) => state.trace);
   const runHistory = useAgentStore((state) => state.runHistory);
   const undoByRunId = useAgentStore((state) => state.undoByRunId);
   const usageByRunId = useAgentStore((state) => state.usageByRunId);
   const runId = useAgentStore((state) => state.runId);
+  const resumeDisconnectedRun = useAgentStore((state) => state.resumeDisconnectedRun);
+  const reconcileRunStatus = useAgentStore((state) => state.reconcileRunStatus);
   const approvalList = Object.values(approvals).filter((approval) => ["pending", "approving", "rejecting"].includes(approval.status));
   const activeRun = status !== "IDLE";
   const hasRunContent = activeRun || steps.length > 0 || approvalList.length > 0 || Boolean(answer) || Boolean(error);
@@ -356,6 +442,13 @@ export function Flow() {
   const elapsedMs = events.reduce((max, entry) => Math.max(max, entry.event.elapsedMs || 0), 0);
   const iterationCount = new Set(trace.map((item) => item.iteration)).size || steps.length;
   const toolCallCount = events.filter((entry) => entry.event.type === "tool_call").length;
+  const showDisconnectedBanner = status === "DISCONNECTED" && !answer;
+  const showWaitingUserInput = status === "WAITING_USER_INPUT" && !answer;
+  const terminalStatus = status === "FAILED" || status === "BUDGET_EXCEEDED" || status === "CANCELLED" ? status : null;
+  const onResumeDisconnected = () => {
+    if (runId) void reconcileRunStatus(runId);
+    void resumeDisconnectedRun();
+  };
 
   return (
     <main className="min-h-0 flex-1 overflow-auto bg-[#090b0d]">
@@ -378,7 +471,21 @@ export function Flow() {
 
         {answer ? <FinalAnswerCard content={answer} elapsedMs={elapsedMs} iterationCount={iterationCount} toolCallCount={toolCallCount} runId={runId} undoViewState={runId ? undoByRunId[runId] : undefined} usage={runId ? usageByRunId[runId] : undefined} /> : null}
 
-        {error ? <RunErrorCard error={error} /> : null}
+        {error && !terminalStatus ? (
+          <RunErrorCard
+            error={error}
+            recoverable={recoverable}
+            onResume={recoverable ? () => runId && void reconcileRunStatus(runId) : undefined}
+          />
+        ) : null}
+
+        {terminalStatus ? <TerminalStatusCard status={terminalStatus} message={error} /> : null}
+
+        {showDisconnectedBanner ? (
+          <DisconnectedCard onResume={onResumeDisconnected} recoverable={recoverable} />
+        ) : null}
+
+        {showWaitingUserInput ? <WaitingForUserInputCard /> : null}
 
         {approvalList.map((approval) => (
           <DiffApprovalCard key={approval.approvalId} approval={approval} />

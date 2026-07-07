@@ -70,11 +70,13 @@ export type AgentNode =
 
 export type AgentEventType =
   | "meta"
+  | "run_started"
   | "node_start"
   | "plan_updated"
   | "replan_started"
   | "checkpoint_saved"
   | "resume_started"
+  | "paused_for_approval"
   | "sub_agent_started"
   | "sub_agent_completed"
   | "sub_agent_failed"
@@ -133,7 +135,12 @@ export type DiffStats = {
 
 export type DiffPayload = {
   format: "OLD_NEW" | "UNIFIED";
-  path: string;
+  /**
+   * Path is informational and may be omitted by backends that ship a
+   * `UNIFIED` diff (the file path is recoverable from the diff header).
+   * The UI still prefers an explicit path when the OLD_NEW format is used.
+   */
+  path?: string;
   language?: string;
   oldText?: string;
   newText?: string;
@@ -232,6 +239,7 @@ export type AgentUsageSummary = {
   cacheHitTokens?: number;
   cacheMissTokens?: number;
   cacheHitRate?: number | null;
+  status?: RunStatus;
 };
 
 export type AgentStreamEvent = {
@@ -253,6 +261,11 @@ export type AgentStreamEvent = {
   workspace?: string;
   elapsedMs?: number;
   step?: number;
+  /**
+   * Stable id for correlating a `tool_call` with its follow-up `observation`
+   * and any approval/result events when multiple tool calls share a `step`.
+   */
+  toolCallId?: string;
   node?: AgentNode;
   nodeInputs?: string[];
   thought?: string;
@@ -281,10 +294,15 @@ export type AgentStreamEvent = {
   /**
    * Backend TODO: include diff on approval_required and GET approval responses.
    * OLD_NEW uses oldText/newText; UNIFIED uses unifiedDiff.
-  */
+   */
   diff?: DiffPayload;
   backgroundTask?: BackgroundTask;
   usage?: AgentUsageSummary | null;
+  /**
+   * When true on an `error` event, the backend believes the failure is
+   * transient and the run can be resumed from its checkpoint.
+   */
+  recoverable?: boolean;
 };
 
 export type AgentAskRequest = {
@@ -300,7 +318,7 @@ export type AgentAskRequest = {
 
 export type AgentApprovalResponse = {
   approvalId: string;
-  status: "PENDING";
+  status: "PENDING" | "DECIDED" | "RESUMED";
   requestId: string;
   conversationId: string;
   workspace: string;
@@ -312,14 +330,35 @@ export type AgentApprovalResponse = {
   expiresAt: string;
   /**
    * Backend TODO: include diff for write approvals when available.
-  */
+   */
   diff?: DiffPayload;
   metadata?: AgentEventMetadata;
+  /**
+   * Optional machine-readable reason code from the backend for the current
+   * approval pause. The UI uses it to label and filter the approval card.
+   */
+  reasonCode?: string;
+  /**
+   * Optional list of alternative actions the backend suggests for this
+   * approval. The UI currently surfaces the simple approve/reject buttons and
+   * may render these as advanced choices in a future iteration.
+   */
+  allowedAlternatives?: string[];
 };
 
 export type AgentApprovalDecisionRequest = {
   decision: "APPROVE" | "REJECT";
   reason?: string;
+  /**
+   * Optional machine-readable reason code. Forwarded to the backend when the
+   * caller provides one; the existing approve/reject flow omits it.
+   */
+  reasonCode?: string;
+  /**
+   * Optional list of alternative actions to take alongside the decision.
+   * Forwarded only when supplied.
+   */
+  allowedAlternatives?: string[];
 };
 
 export type AgentWorkspaceRequest = {
@@ -362,11 +401,15 @@ export type RunStatus =
   | "CONNECTING"
   | "RUNNING"
   | "WAITING_APPROVAL"
+  | "WAITING_USER_INPUT"
   | "RESUMING"
   | "COMPLETED"
+  | "FAILED"
   | "ERROR"
-  | "DISCONNECTED"
-  | "CANCELLED_LOCAL";
+  | "BUDGET_EXCEEDED"
+  | "CANCELLED"
+  | "CANCELLED_LOCAL"
+  | "DISCONNECTED";
 
 export type CreateRunResponse = {
   runId: string;
@@ -469,4 +512,90 @@ export type ConversationSummary = {
   title: string;
   runCount: number;
   workspace: string;
+};
+
+// ---- Run / runtime status types ----
+
+/**
+ * Backend runtime instance descriptor. The frontend keeps the `instanceId`
+ * locally and re-queries this endpoint when the user reloads the page so it
+ * can recalibrate sessions that were live on a previous instance.
+ */
+export type AgentRuntimeInfoResponse = {
+  instanceId: string;
+  startedAt: string;
+  version?: string;
+};
+
+/**
+ * Canonical run status returned by `GET /agent/code/runs/{runId}/status`.
+ * The frontend calls this endpoint to reconcile the UI when a session is
+ * switched, when the SSE disconnects unexpectedly, or when a previously
+ * non-terminal session is observed after the backend restarted.
+ */
+export type AgentRunStatusResponse = {
+  runId: string;
+  status: RunStatus;
+  conversationId?: string;
+  requestId?: string;
+  workspace?: string;
+  checkpointVersion?: number;
+  step?: number;
+  stopReason?: StopReason;
+  message?: string;
+  updatedAt?: string;
+  /**
+   * When true, the run can be resumed from its current checkpoint via
+   * `POST /agent/code/runs/{runId}/resume` (or the approval resume stream).
+   */
+  resumable?: boolean;
+  /**
+   * Best-effort token usage snapshot returned alongside the status. The UI
+   * uses it to update the badge when a run is reconciled in the background.
+   */
+  usage?: AgentUsageSummary;
+};
+
+// ---- Trace / Replay types ----
+
+/**
+ * Backend trace summary. The current UI does not consume this endpoint, but
+ * the type is declared so the runtime contract is fully covered and other
+ * tools (CLI, replay viewer) can share it.
+ */
+export type AgentTrace = {
+  runId: string;
+  status: RunStatus;
+  startedAt?: string;
+  updatedAt?: string;
+  events: AgentStreamEvent[];
+  steps?: AgentRunStep[];
+  usage?: AgentUsageSummary;
+};
+
+/**
+ * A single agent loop iteration, surfaced by the trace endpoint.
+ */
+export type AgentRunStep = {
+  step: number;
+  iteration?: number;
+  thought?: string;
+  tool?: AgentTool;
+  toolCallId?: string;
+  input?: Record<string, unknown>;
+  observation?: string;
+  status?: "pending" | "running" | "completed" | "failed" | "blocked";
+  startedAt?: string;
+  completedAt?: string;
+};
+
+/**
+ * Backend replay summary. The current UI does not consume this endpoint.
+ */
+export type AgentReplay = {
+  runId: string;
+  status: RunStatus;
+  available: boolean;
+  reason?: string;
+  events?: AgentStreamEvent[];
 };

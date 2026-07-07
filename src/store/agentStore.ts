@@ -16,8 +16,11 @@ import {
   fetchBackgroundTasks,
   fetchBackgroundTaskDetail,
   cancelBackgroundTask,
+  getAgentRuntime,
+  getRunStatus,
   ApiRequestError,
   FeatureMissingError,
+  RunNotFoundError,
   type StreamHandle
 } from "@/lib/api";
 import { extractPaths, extractUnifiedDiff, formatTime, summarizeObservation, summarizeParams } from "@/lib/utils";
@@ -26,6 +29,8 @@ import type {
   AgentAskRequest,
   AgentPlanItemStatus,
   AgentPlanView,
+  AgentRuntimeInfoResponse,
+  AgentRunStatusResponse,
   AgentStreamEvent,
   AgentTool,
   AgentUndoResponse,
@@ -50,6 +55,7 @@ export type StepState = {
   step: number;
   thought?: string;
   tool?: AgentTool;
+  toolCallId?: string;
   input?: Record<string, unknown>;
   workspace?: string;
   observation?: string;
@@ -119,6 +125,12 @@ export type Session = {
   recentFiles?: string[];
   answer?: string;
   error?: string;
+  /**
+   * When the last error event carried `recoverable: true`, we mark the session
+   * so the UI can keep the run id / checkpoint and offer a recovery button
+   * instead of going straight into a terminal ERROR state.
+   */
+  recoverable?: boolean;
   runHistory?: RunHistoryItem[];
   undoByRunId?: Record<string, UndoViewState>;
   deletionStatus?: ConversationDeletionStatus;
@@ -172,6 +184,162 @@ type WorkspaceSkillPreference = {
 };
 
 const skillPreferenceStorageKey = "loom-agent:skill-selections:v1";
+const runtimeInstanceStorageKey = "loom-agent:runtime-instance:v1";
+const runStatusCacheStorageKey = "loom-agent:run-status-cache:v1";
+
+const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  "COMPLETED",
+  "FAILED",
+  "BUDGET_EXCEEDED",
+  "CANCELLED",
+  "CANCELLED_LOCAL"
+]);
+
+const STREAMING_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  "CONNECTING",
+  "RUNNING",
+  "RESUMING"
+]);
+
+const PAUSED_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  "WAITING_APPROVAL",
+  "WAITING_USER_INPUT"
+]);
+
+function isTerminalStatus(status?: RunStatus) {
+  return status ? TERMINAL_RUN_STATUSES.has(status) : false;
+}
+
+function isPausedStatus(status?: RunStatus) {
+  return status ? PAUSED_RUN_STATUSES.has(status) : false;
+}
+
+function isStreamingStatusValue(status?: RunStatus) {
+  return status ? STREAMING_RUN_STATUSES.has(status) : false;
+}
+
+/**
+ * Statuses the UI treats as actively-in-progress and that therefore need
+ * validation against the backend (e.g. after a restart, on session switch).
+ */
+function isActiveStatus(status?: RunStatus) {
+  if (!status) return false;
+  return STREAMING_RUN_STATUSES.has(status) || PAUSED_RUN_STATUSES.has(status) || status === "DISCONNECTED";
+}
+
+/**
+ * Maps a backend status to the closest frontend UI status. New terminal
+ * states fold into `ERROR` only when we genuinely don't know what happened;
+ * `FAILED` / `BUDGET_EXCEEDED` / `CANCELLED` are surfaced as their own
+ * labels so the user gets actionable information.
+ */
+function mapBackendStatus(status: RunStatus): RunStatus {
+  switch (status) {
+    case "RUNNING":
+    case "CONNECTING":
+    case "RESUMING":
+    case "WAITING_APPROVAL":
+    case "WAITING_USER_INPUT":
+    case "COMPLETED":
+    case "FAILED":
+    case "BUDGET_EXCEEDED":
+    case "CANCELLED":
+    case "CANCELLED_LOCAL":
+    case "DISCONNECTED":
+    case "IDLE":
+    case "ERROR":
+      return status;
+    default:
+      return "ERROR";
+  }
+}
+
+function readRuntimeInstanceId(): string | undefined {
+  if (typeof localStorage === "undefined") return undefined;
+  try {
+    return localStorage.getItem(runtimeInstanceStorageKey) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeRuntimeInstanceId(value?: string) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    if (value) localStorage.setItem(runtimeInstanceStorageKey, value);
+    else localStorage.removeItem(runtimeInstanceStorageKey);
+  } catch { /* ignore quota */ }
+}
+
+type CachedRunStatus = {
+  status: RunStatus;
+  updatedAt?: string;
+  message?: string;
+};
+
+function readRunStatusCache(): Record<string, CachedRunStatus> {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(runStatusCacheStorageKey);
+    return raw ? (JSON.parse(raw) as Record<string, CachedRunStatus>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeRunStatusCache(cache: Record<string, CachedRunStatus>) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const trimmed: Record<string, CachedRunStatus> = {};
+    const entries = Object.entries(cache).slice(-50);
+    for (const [key, value] of entries) {
+      trimmed[key] = value;
+    }
+    localStorage.setItem(runStatusCacheStorageKey, JSON.stringify(trimmed));
+  } catch { /* ignore quota */ }
+}
+
+function cacheRunStatus(runId: string, payload: AgentRunStatusResponse | { status: RunStatus; message?: string }) {
+  const cache = readRunStatusCache();
+  cache[runId] = {
+    status: payload.status,
+    updatedAt: "updatedAt" in payload ? payload.updatedAt : new Date().toISOString(),
+    message: payload.message
+  };
+  writeRunStatusCache(cache);
+}
+
+function applyRunStatusToSession(
+  session: Session,
+  payload: AgentRunStatusResponse,
+  options: { isActiveSession: boolean }
+): Session {
+  const nextStatus = mapBackendStatus(payload.status);
+  return {
+    ...session,
+    status: nextStatus,
+    runId: payload.runId || session.runId,
+    requestId: payload.requestId || session.requestId,
+    conversationId: payload.conversationId || session.conversationId,
+    workspace: payload.workspace || session.workspace,
+    error:
+      nextStatus === "FAILED" || nextStatus === "BUDGET_EXCEEDED"
+        ? payload.message || session.error
+        : session.error,
+    recoverable:
+      nextStatus === "FAILED" || nextStatus === "BUDGET_EXCEEDED"
+        ? Boolean(payload.resumable)
+        : session.recoverable,
+    ...(options.isActiveSession && nextStatus === "COMPLETED" && payload.usage
+      ? {
+          usageByRunId: {
+            ...(session.usageByRunId || {}),
+            [payload.runId]: payload.usage
+          }
+        }
+      : {})
+  };
+}
 
 function readSkillPreferences(): Record<string, WorkspaceSkillPreference> {
   try {
@@ -218,6 +386,25 @@ type AgentState = {
   selectedLocalFolder?: LocalFolderTarget;
   answer?: string;
   error?: string;
+  /**
+   * True when the most recent error event carried `recoverable: true`. The UI
+   * keeps the run/checkpoint and exposes a recovery action instead of
+   * treating the run as terminally failed.
+   */
+  recoverable: boolean;
+  /**
+   * The runtime instance id captured at page load. When the value returned by
+   * `GET /agent/code/runtime` no longer matches this, every non-terminal
+   * session is re-validated against the backend (which may have lost the
+   * in-memory state during a restart).
+   */
+  runtimeInstanceId?: string;
+  /**
+   * The checkpoint version carried by the most recent event/response. Stored
+   * on the active run so a manual resume has something concrete to retry
+   * against.
+   */
+  checkpointVersion?: number;
   usageByRunId: Record<string, AgentUsageSummary>;
   sessions: Session[];
   streams: Record<string, StreamHandle>;
@@ -265,6 +452,24 @@ type AgentState = {
   selectBackgroundTask: (taskId?: string) => void;
   loadRunUsage: (runId: string) => Promise<void>;
   loadRunUsageStack: (runIds: string[]) => Promise<void>;
+  /**
+   * Queries the backend for the canonical status of `runId` and reconciles
+   * the UI. Used after a SSE disconnect, on session switch, and after a
+   * runtime instance change.
+   */
+  reconcileRunStatus: (runId: string) => Promise<void>;
+  /**
+   * User-triggered resume for a `RUNNING` session whose SSE has dropped but
+   * the backend is still working. Does not auto-call resume while a stream
+   * might still be live.
+   */
+  resumeDisconnectedRun: () => Promise<void>;
+  /**
+   * Recalibrates every non-terminal session using the backend runtime
+   * instance id. Called once on page load and whenever the runtime id
+   * returned by the backend differs from the cached one.
+   */
+  calibrateSessions: () => Promise<void>;
 };
 
 const sessionStorageKey = "loom-agent:sessions";
@@ -312,6 +517,7 @@ function snapshotSession(state: AgentState, patch: Partial<AgentState> = {}): Se
     recentFiles: patch.recentFiles ?? state.recentFiles,
     answer,
     error,
+    recoverable: patch.recoverable ?? state.recoverable ?? false,
     runHistory: patch.runHistory ?? state.runHistory,
     undoByRunId: patch.undoByRunId ?? state.undoByRunId,
     usageByRunId: patch.usageByRunId ?? state.usageByRunId,
@@ -331,7 +537,7 @@ function upsertSessionSnapshot(sessions: Session[], snapshot?: Session) {
 }
 
 function isStreamingStatus(status?: RunStatus) {
-  return status === "CONNECTING" || status === "RUNNING" || status === "RESUMING";
+  return isStreamingStatusValue(status);
 }
 
 function sessionViewState(state: AgentState, session: Session): AgentState {
@@ -345,6 +551,7 @@ function sessionViewState(state: AgentState, session: Session): AgentState {
     submittedPrompt: session.prompt || session.title,
     workspace: session.workspace || state.workspace,
     error: session.error,
+    recoverable: session.recoverable || false,
     answer: session.answer,
     events: session.events || [],
     steps: session.steps || [],
@@ -424,9 +631,19 @@ function snapshotCurrentRun(state: AgentState): RunHistoryItem | undefined {
 }
 
 function upsertStep(steps: StepState[], stepNumber: number, patch: Partial<StepState>): StepState[] {
-  const existing = steps.find((step) => step.step === stepNumber);
+  const toolCallId = patch.toolCallId;
+  // When the backend provides a toolCallId, prefer the step that already
+  // tracks that call. This is what allows multiple tool calls in the same
+  // iteration (parallel calls) to be paired with their own observation.
+  if (toolCallId) {
+    const match = steps.find((step) => step.toolCallId === toolCallId);
+    if (match) {
+      return steps.map((step) => (step === match ? { ...step, ...patch } : step));
+    }
+  }
+  const existing = steps.find((step) => step.step === stepNumber && !step.toolCallId);
   if (existing) {
-    return steps.map((step) => (step.step === stepNumber ? { ...step, ...patch } : step));
+    return steps.map((step) => (step === existing ? { ...step, ...patch } : step));
   }
   const next: StepState = { step: stepNumber, status: "running", ...patch };
   return [...steps, next].sort((a, b) => a.step - b.step);
@@ -669,6 +886,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   skillsLoading: false,
   skillsError: undefined,
   skillsWorkspace: undefined,
+  recoverable: false,
+  runtimeInstanceId: typeof localStorage === "undefined" ? undefined : readRuntimeInstanceId(),
+  checkpointVersion: undefined,
   streams: {},
 
   loadModelConfig: async () => {
@@ -701,6 +921,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         submittedPrompt: undefined,
         error: undefined,
         answer: undefined,
+        recoverable: false,
+        checkpointVersion: undefined,
         events: [],
         steps: [],
         plan: [],
@@ -750,20 +972,33 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         setTimeout(() => {
           void useAgentStore.getState().fetchBackgroundTasks(currentRunId);
         }, 0);
+        // Reconcile active status against the backend in case the previous
+        // process exited before delivering a terminal event. Only fire for
+        // sessions that may still be live on the backend — terminal or
+        // local-cancelled sessions don't need to hit the network.
+        if (isActiveStatus(restoredSession.status)) {
+          setTimeout(() => {
+            void useAgentStore.getState().reconcileRunStatus(currentRunId);
+          }, 0);
+        }
       }
+      const statusIsStaleStream = isStreamingStatus(restoredSession.status) && !state.streams[sessionId];
+      const reconciledStatus: RunStatus = statusIsStaleStream
+        ? "CANCELLED_LOCAL"
+        : restoredSession.status || "IDLE";
       return {
         activeSessionId: restoredSession.id,
         runId: restoredSession.runId,
         requestId: restoredSession.requestId,
         conversationId: restoredSession.conversationId,
-        status: isStreamingStatus(restoredSession.status) && !state.streams[sessionId]
-          ? "CANCELLED_LOCAL"
-          : restoredSession.status || "IDLE",
+        status: reconciledStatus,
         statusMessage: "session selected",
         prompt: restoredSession.prompt || restoredSession.title,
         submittedPrompt: restoredSession.prompt || restoredSession.title,
         workspace: restoredSession.workspace || state.workspace,
         error: restoredSession.error,
+        recoverable: restoredSession.recoverable || false,
+        checkpointVersion: undefined,
         answer: restoredSession.answer,
         events: restoredSession.events || [],
         steps: restoredSession.steps || [],
@@ -1130,6 +1365,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       submittedPrompt: prompt,
       error: undefined,
       answer: undefined,
+      recoverable: false,
+      checkpointVersion: undefined,
       events: [],
       steps: [],
       plan: [],
@@ -1156,7 +1393,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         workspace: state.workspace || undefined,
         includeTrace: true,
         skills: [...state.selectedSkillNames],
-        model: state.selectedModel
+        model: state.selectedModel as AgentAskRequest["model"]
       };
       const stream = openAgentAskStream(request, {
         onOpen: () => {
@@ -1179,7 +1416,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           const storedSession = current.sessions.find((item) => item.id === session.id);
           const status = session.id === current.activeSessionId ? current.status : storedSession?.status || "IDLE";
           const patch: Partial<AgentState> = {};
-          if (!["COMPLETED", "ERROR", "WAITING_APPROVAL", "CANCELLED_LOCAL"].includes(status)) {
+          // Treat normal SSE close as terminal only when the latest in-band
+          // status is already terminal. A `paused_for_approval` event will
+          // have moved the status to `WAITING_APPROVAL` before the close
+          // (and that we keep), while a still-streaming status surfaces a
+          // user-recoverable "connection lost" instead of a network error.
+          if (!isTerminalStatus(status) && !isPausedStatus(status) && status !== "CANCELLED_LOCAL") {
             patch.status = "DISCONNECTED";
             patch.statusMessage = "disconnected";
           }
@@ -1187,9 +1429,20 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             ...patchSessionState(latest, session.id, patch),
             streams: withoutSessionStream(latest.streams, session.id, stream)
           }));
-          if (["COMPLETED", "ERROR"].includes(status)) {
+          if (isTerminalStatus(status)) {
             if (get().activeSessionId === session.id) {
               setTimeout(() => get().refreshUndoAfterTerminal(), 100);
+            }
+          }
+          // After an unexpected disconnect, validate the run against the
+          // backend. This catches the case where the backend finished
+          // (and possibly restarted) while the SSE was down.
+          if (patch.status === "DISCONNECTED") {
+            const runId = current.runId;
+            if (runId) {
+              setTimeout(() => {
+                void useAgentStore.getState().reconcileRunStatus(runId);
+              }, 0);
             }
           }
         },
@@ -1197,7 +1450,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           const current = get();
           if (current.streams[session.id] !== stream) return;
           set((latest) => ({
-            ...patchSessionState(latest, session.id, { status: "ERROR", error: error.message }),
+            ...patchSessionState(latest, session.id, { status: "ERROR", error: error.message, recoverable: false }),
             streams: withoutSessionStream(latest.streams, session.id, stream)
           }));
         }
@@ -1205,7 +1458,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       set((current) => ({ streams: { ...current.streams, [session.id]: stream } }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "运行创建失败";
-      set({ status: "ERROR", error: message, statusMessage: "error" });
+      set({ status: "ERROR", error: message, recoverable: false, statusMessage: "error" });
     }
   },
 
@@ -1247,19 +1500,45 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       let trace = eventState.trace;
       let approvals = eventState.approvals;
       let recentFiles = eventState.recentFiles;
-      let nextStatus = eventState.status;
+      let nextStatus: RunStatus = eventState.status;
       let answer = eventState.answer;
       let error = eventState.error;
+      let recoverable = eventState.recoverable;
       let requestId = eventState.requestId;
       let conversationId = eventState.conversationId;
       let workspace = eventState.workspace;
       let runId = eventState.runId;
       let usageByRunId = eventState.usageByRunId;
+      let checkpointVersion = eventState.checkpointVersion;
 
       runId = event.runId || runId;
       requestId = event.requestId || requestId;
       conversationId = event.conversationId || conversationId;
       workspace = event.workspace || workspace;
+      if (typeof event.checkpointVersion === "number") {
+        checkpointVersion = event.checkpointVersion;
+      }
+
+      if (event.type === "run_started") {
+        // The backend sends a `run_started` event as soon as the run is
+        // registered. Use it to pin the real `runId` and checkpoint so the
+        // UI never shows a `RUNNING` status for an unknown run.
+        nextStatus = "RUNNING";
+        if (event.runId) {
+          cacheRunStatus(event.runId, { status: "RUNNING" });
+        }
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: "run started",
+            detail: event.runId || event.requestId,
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
+          }
+        ];
+      }
 
       if (event.type === "meta") {
         nextStatus = "RUNNING";
@@ -1381,6 +1660,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       if ((event.type === "tool_call" || event.type === "policy_denied") && event.step) {
         steps = upsertStep(steps, event.step, {
           tool: event.tool,
+          toolCallId: event.toolCallId,
           input: event.input,
           workspace: event.workspace,
           status: event.type === "policy_denied" ? "failed" : "running"
@@ -1399,20 +1679,49 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         ];
       }
 
-      if (event.type === "observation" && event.step) {
+      if (event.type === "observation") {
         const paths = extractPaths(event.observation);
         recentFiles = Array.from(new Set([...paths, ...recentFiles])).slice(0, 24);
-        steps = upsertStep(steps, event.step, {
-          observation: event.observation,
-          truncated: event.truncated,
-          unifiedDiff: extractUnifiedDiff(event.observation),
-          status: "completed"
-        });
+        // When the backend gives us a toolCallId, prefer matching it exactly
+        // so parallel calls in the same step don't clobber each other. We
+        // fall back to step-only matching for older backends that don't yet
+        // emit a toolCallId.
+        if (event.toolCallId) {
+          const match = steps.find((step) => step.toolCallId === event.toolCallId);
+          if (match) {
+            steps = steps.map((step) =>
+              step === match
+                ? {
+                    ...step,
+                    observation: event.observation,
+                    truncated: event.truncated,
+                    unifiedDiff: extractUnifiedDiff(event.observation),
+                    status: "completed"
+                  }
+                : step
+            );
+          } else if (event.step) {
+            steps = upsertStep(steps, event.step, {
+              toolCallId: event.toolCallId,
+              observation: event.observation,
+              truncated: event.truncated,
+              unifiedDiff: extractUnifiedDiff(event.observation),
+              status: "completed"
+            });
+          }
+        } else if (event.step) {
+          steps = upsertStep(steps, event.step, {
+            observation: event.observation,
+            truncated: event.truncated,
+            unifiedDiff: extractUnifiedDiff(event.observation),
+            status: "completed"
+          });
+        }
         trace = [
           ...trace,
           {
             id: crypto.randomUUID(),
-            label: `step ${event.step} · completed`,
+            label: event.step ? `step ${event.step} · completed` : "observation",
             detail: summarizeObservation(event.observation, 96),
             status: "done",
             time,
@@ -1424,7 +1733,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           (item) =>
             item.status === "approved" &&
             item.event.tool === "delete_files" &&
-            item.event.step === event.step
+            (item.event.toolCallId
+              ? item.event.toolCallId === event.toolCallId
+              : item.event.step === event.step)
         );
         if (completedDeleteApproval) {
           approvals = {
@@ -1466,6 +1777,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         if (event.step) {
           steps = upsertStep(steps, event.step, {
             tool: event.tool,
+            toolCallId: event.toolCallId,
             input: event.input,
             workspace: event.workspace,
             status: "blocked"
@@ -1478,6 +1790,36 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             id: crypto.randomUUID(),
             label: "approval required",
             detail: traceDetail(event),
+            status: "blocked",
+            time,
+            type: traceType(event),
+            iteration: eventIteration(event, trace)
+          }
+        ];
+      }
+
+      if (event.type === "paused_for_approval") {
+        // The backend may emit a `paused_for_approval` event right before
+        // the SSE closes. Pin `WAITING_APPROVAL` so the post-close state
+        // doesn't drift into `DISCONNECTED`.
+        if (event.runId) cacheRunStatus(event.runId, { status: "WAITING_APPROVAL" });
+        if (event.approvalId && !approvals[event.approvalId]) {
+          approvals = {
+            ...approvals,
+            [event.approvalId]: {
+              approvalId: event.approvalId,
+              status: "pending",
+              event
+            }
+          };
+        }
+        nextStatus = "WAITING_APPROVAL";
+        trace = [
+          ...trace,
+          {
+            id: crypto.randomUUID(),
+            label: "paused for approval",
+            detail: event.message || traceDetail(event),
             status: "blocked",
             time,
             type: traceType(event),
@@ -1503,12 +1845,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
       if (event.type === "done") {
         nextStatus = "COMPLETED";
+        recoverable = false;
         if (event.usage && (event.usage.totalTokens !== undefined || event.usage.inputTokens !== undefined)) {
           const usageRunId = (event.usage.runId || runId || "") as string;
           if (usageRunId) {
             usageByRunId = { ...usageByRunId, [usageRunId]: event.usage };
           }
         }
+        if (runId) cacheRunStatus(runId, { status: "COMPLETED" });
         trace = [
           ...trace,
           {
@@ -1524,13 +1868,29 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
 
       if (event.type === "error") {
-        nextStatus = "ERROR";
+        // Map backend terminal codes to distinct UI states. The current UI
+        // doesn't render every backend terminal code, but we want to avoid
+        // collapsing them all into `ERROR`. New events can grow this set
+        // without breaking the reducer.
+        const code = (event.code || "").toUpperCase();
+        let terminalStatus: RunStatus = "ERROR";
+        if (code === "FAILED") terminalStatus = "FAILED";
+        else if (code === "BUDGET_EXCEEDED") terminalStatus = "BUDGET_EXCEEDED";
+        else if (code === "CANCELLED") terminalStatus = "CANCELLED";
+        nextStatus = terminalStatus;
         error = event.message || event.code || "Agent stream error";
+        // A `recoverable: true` error keeps the run id / checkpoint and
+        // surfaces a recovery action in the UI. We deliberately do not
+        // override `nextStatus` here — the run is still in a non-terminal
+        // state from the UI's point of view (the backend will resend the
+        // run if/when the user clicks recover).
+        recoverable = Boolean(event.recoverable);
+        if (runId) cacheRunStatus(runId, { status: terminalStatus, message: error });
         trace = [
           ...trace,
           {
             id: crypto.randomUUID(),
-            label: "error",
+            label: event.recoverable ? "error (recoverable)" : "error",
             detail: traceDetail(event),
             status: "error",
             time,
@@ -1551,10 +1911,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         status: nextStatus,
         answer,
         error,
+        recoverable,
         runId,
         requestId,
         conversationId,
         workspace,
+        checkpointVersion,
         usageByRunId
       };
 
@@ -1571,7 +1933,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const sessionId = state.activeSessionId;
       const nextState = {
         status: "CANCELLED_LOCAL" as const,
-        statusMessage: "cancelled locally"
+        statusMessage: "cancelled locally",
+        recoverable: false
       };
       return {
         ...nextState,
@@ -1622,7 +1985,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           const storedSession = current.sessions.find((item) => item.id === sessionId);
           const status = sessionId === current.activeSessionId ? current.status : storedSession?.status || "IDLE";
           const patch: Partial<AgentState> = {};
-          if (!["COMPLETED", "ERROR", "WAITING_APPROVAL", "CANCELLED_LOCAL"].includes(status)) {
+          if (!isTerminalStatus(status) && !isPausedStatus(status) && status !== "CANCELLED_LOCAL") {
             patch.status = "DISCONNECTED";
             patch.statusMessage = "disconnected";
           }
@@ -1630,9 +1993,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             ...patchSessionState(state, sessionId, patch),
             streams: withoutSessionStream(state.streams, sessionId, stream)
           }));
-          if (["COMPLETED", "ERROR"].includes(status)) {
+          if (isTerminalStatus(status)) {
             if (get().activeSessionId === sessionId) {
               setTimeout(() => get().refreshUndoAfterTerminal(), 100);
+            }
+          }
+          if (patch.status === "DISCONNECTED") {
+            const runId = current.runId;
+            if (runId) {
+              setTimeout(() => {
+                void useAgentStore.getState().reconcileRunStatus(runId);
+              }, 0);
             }
           }
         },
@@ -1645,6 +2016,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             const nextState = {
               status: "ERROR" as const,
               error: error.message,
+              recoverable: false,
               approvals: {
                 ...target.approvals,
                 [approvalId]: { ...approval, status: "pending" as const }
@@ -1659,7 +2031,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       set((state) => ({ streams: { ...state.streams, [sessionId]: stream } }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "审批失败";
-      set((state) => patchSessionState(state, sessionId, { status: "ERROR", error: message }));
+      set((state) => patchSessionState(state, sessionId, { status: "ERROR", error: message, recoverable: false }));
     }
   },
 
@@ -1884,7 +2256,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       const usage = await getRunUsage(runId);
       set((state) => {
-        const usageByRunId = { ...state.usageByRunId, [runId]: usage };
+        const usageRunId = usage.runId || runId;
+        const usageByRunId = { ...state.usageByRunId, [usageRunId]: usage };
         return {
           usageByRunId,
           sessions: upsertSessionSnapshot(state.sessions, snapshotSession(state, { usageByRunId }))
@@ -1904,6 +2277,176 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     });
     if (unique.length === 0) return;
     await Promise.allSettled(unique.map((id) => get().loadRunUsage(id)));
+  },
+
+  reconcileRunStatus: async (runId) => {
+    if (!runId) return;
+    try {
+      const payload = await getRunStatus(runId);
+      cacheRunStatus(runId, payload);
+      const mapped = mapBackendStatus(payload.status);
+      set((state) => {
+        const isActiveSession = state.activeSessionId
+          ? state.sessions.find((s) => s.id === state.activeSessionId)?.runId === runId
+          : false;
+        const sessions = state.sessions.map((session) =>
+          session.runId === runId
+            ? applyRunStatusToSession(session, payload, { isActiveSession })
+            : session
+        );
+        if (!isActiveSession) return { sessions };
+        // If we are the active session, also sync the live view.
+        const active = sessions.find((s) => s.id === state.activeSessionId);
+        const patch: Partial<AgentState> = {
+          status: mapped,
+          recoverable: active?.recoverable ?? false,
+          runId: payload.runId,
+          requestId: payload.requestId,
+          conversationId: payload.conversationId,
+          workspace: payload.workspace || state.workspace
+        };
+        if (mapped === "FAILED" || mapped === "BUDGET_EXCEEDED") {
+          patch.error = payload.message || state.error;
+        } else if (isTerminalStatus(mapped) || isPausedStatus(mapped)) {
+          // clear recoverable flag when entering terminal or paused states
+          patch.recoverable = false;
+        }
+        if (typeof payload.checkpointVersion === "number") {
+          patch.checkpointVersion = payload.checkpointVersion;
+        }
+        return { ...patch, sessions };
+      });
+    } catch (error) {
+      if (error instanceof RunNotFoundError) {
+        // The backend has lost the in-memory state. Promote the session to
+        // a clear terminal state (the most recent terminal we have, or
+        // CANCELLED_LOCAL as a last resort) rather than leaving the user
+        // stuck on a perpetual "disconnected" / "running" status.
+        const cache = readRunStatusCache();
+        const cached = cache[runId]?.status;
+        const fallback: RunStatus = isTerminalStatus(cached)
+          ? cached
+          : cached === "WAITING_APPROVAL"
+            ? "WAITING_APPROVAL"
+            : "CANCELLED_LOCAL";
+        set((state) => {
+          const sessions = state.sessions.map((session) =>
+            session.runId === runId
+              ? {
+                  ...session,
+                  status: fallback,
+                  recoverable: false
+                }
+              : session
+          );
+          const streams: Record<string, StreamHandle> = { ...state.streams };
+          // Find any sessions (live or archived) whose run id is now dead
+          // and drop their cached stream handle so the SSE close events
+          // don't keep bouncing the UI between DISCONNECTED and active.
+          const candidateIds = new Set<string>();
+          for (const session of state.sessions) {
+            if (session.runId === runId) candidateIds.add(session.id);
+          }
+          for (const id of candidateIds) {
+            if (streams[id]) {
+              streams[id].close();
+              delete streams[id];
+            }
+          }
+          const isActiveSession = state.activeSessionId
+            ? candidateIds.has(state.activeSessionId)
+            : false;
+          return {
+            sessions,
+            streams,
+            ...(isActiveSession
+              ? {
+                  status: fallback,
+                  recoverable: false
+                }
+              : {})
+          };
+        });
+        return;
+      }
+      // Other errors are non-fatal: the next SSE event (or a manual retry)
+      // will refresh the state.
+    }
+  },
+
+  resumeDisconnectedRun: async () => {
+    const state = get();
+    if (state.status !== "DISCONNECTED" || !state.runId) return;
+    // Resume through the approval stream is only valid when the previous
+    // pause was for approval. For a `RUNNING` run we use the generic
+    // run-status query to decide whether the backend still considers the
+    // run live, then update the local view to `RUNNING`/`COMPLETED`/etc.
+    await get().reconcileRunStatus(state.runId);
+  },
+
+  calibrateSessions: async () => {
+    let runtime: AgentRuntimeInfoResponse | undefined;
+    try {
+      runtime = await getAgentRuntime();
+    } catch {
+      // If the runtime endpoint is missing, fall back to the previous
+      // behavior (best-effort per-session reconciliation). We still want to
+      // clear stale streaming references for active sessions, though.
+    }
+    const previousInstanceId = get().runtimeInstanceId;
+    const nextInstanceId = runtime?.instanceId || previousInstanceId;
+    const instanceChanged = Boolean(previousInstanceId && runtime && runtime.instanceId !== previousInstanceId);
+    if (runtime) {
+      writeRuntimeInstanceId(runtime.instanceId);
+      set({ runtimeInstanceId: runtime.instanceId });
+    }
+
+    if (!instanceChanged) {
+      // Just refresh active / paused sessions; the runtime hasn't been
+      // recycled so the local view is still trustworthy.
+      const active = get();
+      const session = active.sessions.find((s) => s.id === active.activeSessionId);
+      if (session?.runId && isActiveStatus(session.status)) {
+        void get().reconcileRunStatus(session.runId);
+      }
+      return;
+    }
+
+    // Runtime restarted: the in-memory state is gone. Recalibrate every
+    // non-terminal session by hitting the status endpoint. Sessions whose
+    // runs no longer exist on the backend will be promoted to
+    // `CANCELLED_LOCAL` (or their last cached terminal status) by
+    // `reconcileRunStatus`.
+    const sessions = get().sessions;
+    const activeRunIds = new Set<string>();
+    for (const session of sessions) {
+      if (isActiveStatus(session.status) && session.runId) {
+        activeRunIds.add(session.runId);
+      }
+    }
+    if (activeRunIds.size === 0) return;
+    // Drop any cached stream handle that we know is now dead, otherwise
+    // SSE close events will keep the UI in a perpetual "disconnected"
+    // state.
+    set((state) => {
+      const streams: Record<string, StreamHandle> = { ...state.streams };
+      const candidateIds = new Set<string>();
+      for (const session of state.sessions) {
+        if (session.runId && activeRunIds.has(session.runId)) {
+          candidateIds.add(session.id);
+        }
+      }
+      for (const id of candidateIds) {
+        if (streams[id]) {
+          streams[id].close();
+          delete streams[id];
+        }
+      }
+      return { streams };
+    });
+    await Promise.allSettled(
+      Array.from(activeRunIds).map((runId) => get().reconcileRunStatus(runId))
+    );
   }
 }));
 

@@ -849,4 +849,370 @@ describe("agent store event reducer", () => {
       expect(session?.undoByRunId?.["run-1"]?.response?.status).toBe("UNDONE");
     });
   });
+
+  describe("run_started / paused_for_approval / recoverable", () => {
+    beforeEach(() => {
+      useAgentStore.setState({
+        status: "IDLE",
+        events: [],
+        steps: [],
+        plan: [],
+        planTriggered: false,
+        trace: [],
+        approvals: {},
+        recentFiles: [],
+        runHistory: [],
+        answer: undefined,
+        error: undefined,
+        recoverable: false,
+        checkpointVersion: undefined,
+        runId: undefined,
+        prompt: "",
+        submittedPrompt: undefined,
+        streams: {}
+      });
+    });
+
+    it("pins the real runId and checkpoint from a run_started event", () => {
+      useAgentStore.getState().receiveEvent({
+        type: "run_started",
+        runId: "run-real",
+        checkpointVersion: 12
+      });
+      const state = useAgentStore.getState();
+      expect(state.runId).toBe("run-real");
+      expect(state.status).toBe("RUNNING");
+      expect(state.checkpointVersion).toBe(12);
+      expect(state.trace.some((item) => item.label === "run started")).toBe(true);
+    });
+
+    it("keeps WAITING_APPROVAL after the approval_required + paused_for_approval + SSE close sequence", () => {
+      const sessionId = "session-paused";
+      const stream = { close: vi.fn() };
+      useAgentStore.setState({
+        activeSessionId: sessionId,
+        status: "RUNNING",
+        runId: "run-pause",
+        streams: { [sessionId]: stream },
+        sessions: [
+          {
+            id: sessionId,
+            title: "t",
+            createdAt: "2026-07-06T00:00:00.000Z",
+            updatedAt: "2026-07-06T00:00:00.000Z",
+            status: "RUNNING",
+            runId: "run-pause"
+          }
+        ]
+      });
+
+      useAgentStore.getState().receiveEvent(
+        {
+          type: "approval_required",
+          step: 1,
+          tool: "replace_in_file",
+          input: { path: "src/A.ts" },
+          approvalId: "ap-pause",
+          permissionLevel: "WRITE_CONFIRM",
+          riskReason: "needs human review",
+          operationPreview: "replace_in_file",
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        },
+        sessionId
+      );
+      useAgentStore.getState().receiveEvent(
+        { type: "paused_for_approval", runId: "run-pause", approvalId: "ap-pause" },
+        sessionId
+      );
+      // Simulate the SSE disconnect landing while the latest in-band status
+      // is `WAITING_APPROVAL`.
+      useAgentStore.setState((state) => ({
+        ...state,
+        status: "WAITING_APPROVAL",
+        streams: Object.fromEntries(
+          Object.entries(state.streams).filter(([id]) => id !== sessionId)
+        )
+      }));
+      const stored = useAgentStore.getState().sessions.find((s) => s.id === sessionId);
+      expect(stored?.status).toBe("WAITING_APPROVAL");
+      expect(useAgentStore.getState().status).toBe("WAITING_APPROVAL");
+      expect(useAgentStore.getState().approvals["ap-pause"]?.status).toBe("pending");
+    });
+
+    it("maps error events with FAILED / BUDGET_EXCEEDED / CANCELLED codes to specific UI states", () => {
+      useAgentStore.getState().receiveEvent({
+        type: "error",
+        code: "FAILED",
+        message: "model call failed"
+      });
+      expect(useAgentStore.getState().status).toBe("FAILED");
+      expect(useAgentStore.getState().recoverable).toBe(false);
+
+      useAgentStore.getState().receiveEvent({
+        type: "error",
+        code: "BUDGET_EXCEEDED",
+        message: "out of tokens"
+      });
+      expect(useAgentStore.getState().status).toBe("BUDGET_EXCEEDED");
+
+      useAgentStore.getState().receiveEvent({
+        type: "error",
+        code: "CANCELLED",
+        message: "cancelled by user"
+      });
+      expect(useAgentStore.getState().status).toBe("CANCELLED");
+    });
+
+    it("keeps the run alive and exposes a recovery flag when an error is recoverable", () => {
+      useAgentStore.setState({
+        runId: "run-1",
+        status: "RUNNING",
+        checkpointVersion: 5
+      });
+      useAgentStore.getState().receiveEvent({
+        type: "error",
+        code: "TRANSIENT",
+        message: "tool transport reset",
+        recoverable: true
+      });
+      const state = useAgentStore.getState();
+      expect(state.runId).toBe("run-1");
+      expect(state.checkpointVersion).toBe(5);
+      expect(state.recoverable).toBe(true);
+    });
+
+    it("pairs parallel tool calls with observations through toolCallId", () => {
+      useAgentStore.getState().receiveEvent({
+        type: "tool_call",
+        step: 2,
+        tool: "code_search",
+        toolCallId: "call-A",
+        input: { query: "A" }
+      });
+      useAgentStore.getState().receiveEvent({
+        type: "tool_call",
+        step: 2,
+        tool: "read_file",
+        toolCallId: "call-B",
+        input: { path: "src/B.ts" }
+      });
+      useAgentStore.getState().receiveEvent({
+        type: "observation",
+        step: 2,
+        toolCallId: "call-B",
+        observation: "src/B.ts:1: hello"
+      });
+      const state = useAgentStore.getState();
+      const stepA = state.steps.find((step) => step.toolCallId === "call-A");
+      const stepB = state.steps.find((step) => step.toolCallId === "call-B");
+      expect(stepA?.tool).toBe("code_search");
+      expect(stepA?.observation).toBeUndefined();
+      expect(stepB?.tool).toBe("read_file");
+      expect(stepB?.observation).toContain("hello");
+    });
+  });
+
+  describe("usage summaries", () => {
+    it("stores mismatched usage under the returned run id instead of the requested run id", async () => {
+      useAgentStore.setState({
+        usageByRunId: {},
+        sessions: [],
+        activeSessionId: undefined
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({
+            code: "0000",
+            data: { runId: "actual-run", totalTokens: 120 }
+          }), {
+            headers: { "Content-Type": "application/json" }
+          })
+        )
+      );
+
+      await useAgentStore.getState().loadRunUsage("requested-run");
+
+      const usageByRunId = useAgentStore.getState().usageByRunId;
+      expect(usageByRunId["requested-run"]).toBeUndefined();
+      expect(usageByRunId["actual-run"]?.totalTokens).toBe(120);
+    });
+  });
+
+  describe("status reconciliation", () => {
+    beforeEach(() => {
+      useAgentStore.setState({
+        status: "IDLE",
+        runId: undefined,
+        runHistory: [],
+        sessions: [],
+        streams: {},
+        recoverable: false
+      });
+    });
+
+    function mockStatusResponse(payload: unknown, status = 200) {
+      return new Response(JSON.stringify({ code: "0000", data: payload }), {
+        status,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    it("reconciles a disconnected run against the backend", async () => {
+      const sessionId = "session-disc";
+      useAgentStore.setState({
+        activeSessionId: sessionId,
+        runId: "run-x",
+        status: "DISCONNECTED",
+        recoverable: true,
+        sessions: [
+          {
+            id: sessionId,
+            title: "t",
+            createdAt: "2026-07-06T00:00:00.000Z",
+            updatedAt: "2026-07-06T00:00:00.000Z",
+            status: "DISCONNECTED",
+            runId: "run-x",
+            recoverable: true
+          }
+        ]
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          mockStatusResponse({
+            runId: "run-x",
+            status: "RUNNING",
+            checkpointVersion: 3
+          })
+        )
+      );
+
+      await useAgentStore.getState().reconcileRunStatus("run-x");
+
+      const state = useAgentStore.getState();
+      expect(state.status).toBe("RUNNING");
+      expect(state.checkpointVersion).toBe(3);
+      const session = state.sessions.find((s) => s.id === sessionId);
+      expect(session?.status).toBe("RUNNING");
+      expect(session?.recoverable).toBe(true);
+    });
+
+    it("reconciles to a terminal FAILED with the backend message", async () => {
+      useAgentStore.setState({
+        runId: "run-y",
+        status: "DISCONNECTED",
+        activeSessionId: "s-y",
+        sessions: [
+          {
+            id: "s-y",
+            title: "t",
+            createdAt: "2026-07-06T00:00:00.000Z",
+            updatedAt: "2026-07-06T00:00:00.000Z",
+            status: "DISCONNECTED",
+            runId: "run-y"
+          }
+        ]
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          mockStatusResponse({
+            runId: "run-y",
+            status: "FAILED",
+            message: "tool chain aborted",
+            resumable: true
+          })
+        )
+      );
+
+      await useAgentStore.getState().reconcileRunStatus("run-y");
+
+      const state = useAgentStore.getState();
+      expect(state.status).toBe("FAILED");
+      expect(state.error).toBe("tool chain aborted");
+      const session = state.sessions.find((s) => s.id === "s-y");
+      expect(session?.status).toBe("FAILED");
+      expect(session?.recoverable).toBe(true);
+    });
+
+    it("falls back to a clean local terminal state when the backend no longer knows the run", async () => {
+      const sessionId = "session-ghost";
+      useAgentStore.setState({
+        activeSessionId: sessionId,
+        runId: "run-ghost",
+        status: "RUNNING",
+        streams: { [sessionId]: { close: vi.fn() } },
+        sessions: [
+          {
+            id: sessionId,
+            title: "t",
+            createdAt: "2026-07-06T00:00:00.000Z",
+            updatedAt: "2026-07-06T00:00:00.000Z",
+            status: "RUNNING",
+            runId: "run-ghost"
+          }
+        ]
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ code: "run_not_found", info: "run not found" }), {
+            status: 404
+          })
+        )
+      );
+
+      await useAgentStore.getState().reconcileRunStatus("run-ghost");
+
+      const state = useAgentStore.getState();
+      expect(["CANCELLED_LOCAL", "FAILED", "COMPLETED"]).toContain(state.status);
+      const session = state.sessions.find((s) => s.id === sessionId);
+      expect(session?.status).toBe(state.status);
+      expect(state.streams[sessionId]).toBeUndefined();
+    });
+
+    it("calibrates non-terminal sessions when the runtime instance id changes", async () => {
+      const oldInstance = "instance-A";
+      useAgentStore.setState({
+        runtimeInstanceId: oldInstance,
+        activeSessionId: "s-cal",
+        runId: "run-cal",
+        status: "RUNNING",
+        streams: { "s-cal": { close: vi.fn() } },
+        sessions: [
+          {
+            id: "s-cal",
+            title: "t",
+            createdAt: "2026-07-06T00:00:00.000Z",
+            updatedAt: "2026-07-06T00:00:00.000Z",
+            status: "RUNNING",
+            runId: "run-cal"
+          }
+        ]
+      });
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((url: string) => {
+          if (url.includes("/agent/code/runtime")) {
+            return Promise.resolve(
+              mockStatusResponse({ instanceId: "instance-B", startedAt: "2026-07-06T01:00:00.000Z" })
+            );
+          }
+          if (url.includes("/runs/run-cal/status")) {
+            return Promise.resolve(
+              mockStatusResponse({ runId: "run-cal", status: "RUNNING" })
+            );
+          }
+          return Promise.resolve(new Response("{}", { status: 404 }));
+        })
+      );
+
+      await useAgentStore.getState().calibrateSessions();
+
+      const state = useAgentStore.getState();
+      expect(state.runtimeInstanceId).toBe("instance-B");
+    });
+  });
 });

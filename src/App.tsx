@@ -4,6 +4,7 @@ import { InputBar } from "@/components/workbench/InputBar";
 import { RightRail } from "@/components/workbench/RightRail";
 import { Sidebar } from "@/components/workbench/Sidebar";
 import { TopBar } from "@/components/workbench/TopBar";
+import { useAgentStore } from "@/store/agentStore";
 
 export default function App() {
   const [leftPanelOpen, setLeftPanelOpen] = useState(() => window.innerWidth >= 1180);
@@ -24,6 +25,14 @@ export default function App() {
       return next;
     });
   };
+
+  useEffect(() => {
+    // Reconcile every non-terminal session against the backend on mount.
+    // Catches the case where the page reloaded mid-run, the backend
+    // restarted, or the user is coming back to a session whose SSE has
+    // long since closed.
+    void useAgentStore.getState().calibrateSessions();
+  }, []);
 
   useEffect(() => {
     let wideLayout = window.innerWidth >= 1180;

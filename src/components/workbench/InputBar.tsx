@@ -1,4 +1,4 @@
-import { AtSign, ChevronDown, Send, Square, X } from "lucide-react";
+import { AtSign, ChevronDown, RotateCcw, Send, Square, X } from "lucide-react";
 import { useRef } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { useAgentStore } from "@/store/agentStore";
@@ -15,8 +15,11 @@ export function InputBar() {
   const setSelectedLocalFile = useAgentStore((state) => state.setSelectedLocalFile);
   const startRun = useAgentStore((state) => state.startRun);
   const stopRun = useAgentStore((state) => state.stopRun);
+  const resumeDisconnectedRun = useAgentStore((state) => state.resumeDisconnectedRun);
+  const recoverable = useAgentStore((state) => state.recoverable);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const running = ["CONNECTING", "RUNNING", "WAITING_APPROVAL", "RESUMING"].includes(status);
+  const running = ["CONNECTING", "RUNNING", "WAITING_APPROVAL", "WAITING_USER_INPUT", "RESUMING"].includes(status);
+  const showResumeButton = status === "DISCONNECTED" && recoverable;
 
   return (
     <footer className="shrink-0 bg-[#0e0e11] px-4 pb-4 pt-2">
@@ -80,18 +83,42 @@ export function InputBar() {
             <ChevronDown className="pointer-events-none absolute right-2 text-white/30" size={11} />
           </label>
 
+          {showResumeButton ? (
+            <button
+              type="button"
+              className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-400/10 px-2.5 text-[10.5px] font-medium text-amber-300 transition hover:border-amber-400/60 hover:bg-amber-400/20"
+              title="尝试恢复运行"
+              aria-label="恢复运行"
+              onClick={() => void resumeDisconnectedRun()}
+            >
+              <RotateCcw size={11} />
+              恢复
+            </button>
+          ) : null}
+
+          {recoverable && !showResumeButton ? (
+            <span
+              className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 text-[10.5px] font-medium text-amber-300"
+              title="本次错误可恢复"
+            >
+              可恢复
+            </span>
+          ) : null}
+
           <button
             type="button"
-            className={`ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] transition ${
-              running
-                ? "bg-red-400/15 text-red-300 hover:bg-red-400/22"
-                : "bg-[#F3A04C] text-[#1b1209] shadow-[0_8px_20px_rgba(229,133,34,.22)] hover:bg-[#ffad58] disabled:cursor-not-allowed disabled:opacity-35"
+            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] transition ${
+              showResumeButton
+                ? "ml-1 bg-amber-400/15 text-amber-300 hover:bg-amber-400/22"
+                : running
+                  ? "ml-auto bg-red-400/15 text-red-300 hover:bg-red-400/22"
+                  : "ml-auto bg-[#F3A04C] text-[#1b1209] shadow-[0_8px_20px_rgba(229,133,34,.22)] hover:bg-[#ffad58] disabled:cursor-not-allowed disabled:opacity-35"
             }`}
-            title={running ? "停止" : "发送"}
-            disabled={!running && !prompt.trim()}
-            onClick={() => (running ? stopRun() : void startRun())}
+            title={showResumeButton ? "恢复" : running ? "停止" : "发送"}
+            disabled={!running && !prompt.trim() && !showResumeButton}
+            onClick={() => (showResumeButton ? void resumeDisconnectedRun() : running ? stopRun() : void startRun())}
           >
-            {running ? <Square size={14} fill="currentColor" /> : <Send size={15} fill="currentColor" />}
+            {showResumeButton ? <RotateCcw size={14} /> : running ? <Square size={14} fill="currentColor" /> : <Send size={15} fill="currentColor" />}
           </button>
         </div>
       </div>
