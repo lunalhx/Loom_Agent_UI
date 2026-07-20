@@ -274,7 +274,7 @@ export function Sidebar({ open }: { open: boolean }) {
           </div>
         ) : recentFiles.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border bg-[#0b0d0f] p-4 text-sm leading-6 text-muted-foreground">
-            Enter a workspace path to load files
+            回车即用默认工作区，输入路径可切换
           </div>
         ) : (
           <div className="space-y-1">

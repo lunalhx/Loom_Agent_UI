@@ -119,7 +119,7 @@ describe("agent store event reducer", () => {
       tool: "delete_files",
       input: { paths: ["src/obsolete.ts"] },
       approvalId: "mock-high-risk-approval",
-      workspace: "Loom_Agent_UI",
+      workspace: "Loom_Agent",
       permissionLevel: "HIGH_RISK_CONFIRM",
       riskReason: "文件删除不可恢复，需要高危审批",
       operationPreview: "删除 1 个文件（1 KB）:\n  src/obsolete.ts",

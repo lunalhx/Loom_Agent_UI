@@ -8,9 +8,9 @@ import { DiffApprovalCard } from "./DiffApprovalCard";
 import { UndoConfirmDialog } from "./UndoConfirmDialog";
 
 const emptyPrompts = [
-  { icon: "⌕", tone: "blue", label: "解释这个项目的整体架构和模块职责", prompt: "解释这个项目的整体架构和模块职责" },
-  { icon: "✎", tone: "green", label: "给 domain 模块补充单元测试", prompt: "给 Loom_Agent-domain 模块补充单元测试" },
-  { icon: "⚑", tone: "orange", label: "找出所有调用了废弃 API 的位置", prompt: "找出项目里所有调用了废弃 API 的位置" }
+  { icon: "⌕", tone: "blue", label: "添加一个待办清单组件，支持勾选和截止日期", prompt: "添加一个待办清单组件，支持勾选和截止日期" },
+  { icon: "✎", tone: "green", label: "给便签添加编辑功能，双击即可修改内容", prompt: "给便签添加编辑功能，双击即可修改内容" },
+  { icon: "⚑", tone: "orange", label: "添加一个天气组件，显示当前城市天气", prompt: "添加一个天气组件，显示当前城市天气" }
 ];
 
 const loadingLabels = ["Weaving", "Threading", "Spinning up", "On the loom"] as const;
@@ -26,7 +26,7 @@ function shuffledLoadingLabels() {
 
 function workspaceLabel(workspace?: string, displayName?: string) {
   if (displayName) return displayName;
-  if (!workspace) return "java/Loom_Agent_UI";
+  if (!workspace) return "Loom_Agent";
   const parts = workspace.split(/[\\/]/).filter(Boolean);
   return parts.slice(-2).join("/") || workspace;
 }

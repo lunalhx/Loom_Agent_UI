@@ -6,7 +6,7 @@ export const normalRun: AgentStreamEvent[] = [
     runId: "mock-run-001",
     requestId: "mock-request-001",
     conversationId: "mock-conversation-001",
-    workspace: "Loom_Agent_UI",
+    workspace: "Loom_Agent",
     stepCount: 3
   },
   {
@@ -23,7 +23,7 @@ export const normalRun: AgentStreamEvent[] = [
   },
   { type: "node_start", node: "model_call", nodeInputs: ["currentPrompt", "requestId", "conversationId"] },
   { type: "thought", step: 1, thought: "先搜索工作区中的 React 入口与组件结构。" },
-  { type: "tool_call", step: 1, tool: "code_search", input: { query: "createRoot", limit: 20 }, workspace: "Loom_Agent_UI" },
+  { type: "tool_call", step: 1, tool: "code_search", input: { query: "createRoot", limit: 20 }, workspace: "Loom_Agent" },
   {
     type: "observation",
     step: 1,
@@ -36,7 +36,7 @@ export const normalRun: AgentStreamEvent[] = [
   { type: "sub_agent_summary", runId: "mock-run-001", subAgentRunId: "reviewer-1", subAgentRole: "review" },
   { type: "sub_agent_completed", runId: "mock-run-001", subAgentRunId: "reviewer-1", subAgentRole: "review" },
   { type: "thought", step: 2, thought: "读取主界面文件并定位需要更新的状态。" },
-  { type: "tool_call", step: 2, tool: "read_file", input: { path: "src/App.tsx" }, workspace: "Loom_Agent_UI" },
+  { type: "tool_call", step: 2, tool: "read_file", input: { path: "src/App.tsx" }, workspace: "Loom_Agent" },
   {
     type: "observation",
     step: 2,
@@ -65,7 +65,7 @@ export const approvalRun: AgentStreamEvent[] = [
     type: "meta",
     requestId: "mock-request-approval",
     conversationId: "mock-conversation-approval",
-    workspace: "Loom_Agent_UI",
+    workspace: "Loom_Agent",
     stepCount: 4
   },
   { type: "thought", step: 1, thought: "需要修改文件，先准备替换操作。" },
@@ -74,7 +74,7 @@ export const approvalRun: AgentStreamEvent[] = [
     step: 1,
     tool: "replace_in_file",
     input: { path: "src/App.tsx", oldText: "<14 chars>", newText: "<19 chars>", expectedOccurrences: 1 },
-    workspace: "Loom_Agent_UI"
+    workspace: "Loom_Agent"
   },
   {
     type: "approval_required",
@@ -82,7 +82,7 @@ export const approvalRun: AgentStreamEvent[] = [
     tool: "replace_in_file",
     input: { path: "src/App.tsx", oldText: "<14 chars>", newText: "<19 chars>", expectedOccurrences: 1 },
     approvalId: "mock-approval-001",
-    workspace: "Loom_Agent_UI",
+    workspace: "Loom_Agent",
     permissionLevel: "WRITE_CONFIRM",
     riskReason: "文件替换会修改工作区内容，需要人工确认",
     operationPreview: "replace_in_file path=src/App.tsx oldChars=14 newChars=19",
@@ -101,7 +101,7 @@ export const approvalRun: AgentStreamEvent[] = [
     tool: "write_file",
     input: { path: "src/generated.txt", content: "<348 chars>" },
     approvalId: "mock-approval-no-diff",
-    workspace: "Loom_Agent_UI",
+    workspace: "Loom_Agent",
     permissionLevel: "WRITE_CONFIRM",
     riskReason: "新建文件需要人工确认",
     operationPreview: "write_file path=src/generated.txt chars=348",
@@ -114,7 +114,7 @@ export const policyDeniedRun: AgentStreamEvent[] = [
     type: "meta",
     requestId: "mock-request-denied",
     conversationId: "mock-conversation-denied",
-    workspace: "Loom_Agent_UI"
+    workspace: "Loom_Agent"
   },
   { type: "thought", step: 1, thought: "尝试执行高风险命令。" },
   {
@@ -131,6 +131,6 @@ export const policyDeniedRun: AgentStreamEvent[] = [
 ];
 
 export const errorRun: AgentStreamEvent[] = [
-  { type: "meta", requestId: "mock-request-error", conversationId: "mock-conversation-error", workspace: "Loom_Agent_UI" },
+  { type: "meta", requestId: "mock-request-error", conversationId: "mock-conversation-error", workspace: "Loom_Agent" },
   { type: "error", code: "invalid_request", message: "question 不能为空" }
 ];
