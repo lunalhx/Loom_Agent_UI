@@ -8,9 +8,9 @@ import { DiffApprovalCard } from "./DiffApprovalCard";
 import { UndoConfirmDialog } from "./UndoConfirmDialog";
 
 const emptyPrompts = [
-  { icon: "⌕", tone: "blue", label: "添加一个待办清单组件，支持勾选和截止日期", prompt: "添加一个待办清单组件，支持勾选和截止日期" },
-  { icon: "✎", tone: "green", label: "给便签添加编辑功能，双击即可修改内容", prompt: "给便签添加编辑功能，双击即可修改内容" },
-  { icon: "⚑", tone: "orange", label: "添加一个天气组件，显示当前城市天气", prompt: "添加一个天气组件，显示当前城市天气" }
+  { icon: "⌕", tone: "blue", label: "把页面标题改成「我的工作台」", prompt: "把页面标题改成「我的工作台」" },
+  { icon: "✎", tone: "green", label: "把时钟改成 12 小时制显示", prompt: "把时钟改成 12 小时制显示" },
+  { icon: "⚑", tone: "orange", label: "给便签添加字数统计", prompt: "给便签添加字数统计" }
 ];
 
 const loadingLabels = ["Weaving", "Threading", "Spinning up", "On the loom"] as const;
