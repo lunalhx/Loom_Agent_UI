@@ -283,11 +283,10 @@ export type AgentStreamEvent = {
   stepCount?: number;
   code?: string;
   message?: string;
-  subAgentId?: string;
-  subAgentName?: string;
+  subAgentRunId?: string;
+  subAgentTaskId?: string;
   subAgentRole?: string;
-  subAgentStatus?: "started" | "completed" | "failed";
-  subAgentSummary?: string;
+  subAgentStatus?: string;
   plan?: AgentPlanView;
   checkpointVersion?: number;
   metadata?: AgentEventMetadata;
@@ -461,6 +460,18 @@ export type AgentUndoResponse = {
   expiresAt?: string;
 };
 
+/**
+ * Response from POST /agent/code/runs/{runId}/undo (execute undo).
+ * This is a different shape from the GET undo status response.
+ */
+export type AgentUndoExecuteResponse = {
+  runId: string;
+  success: boolean;
+  code: string;
+  message: string;
+  restoredFileCount: number;
+};
+
 export type AgentUndoRequest = {
   expectedSnapshotVersion: number;
 };
@@ -535,25 +546,12 @@ export type AgentRuntimeInfoResponse = {
  */
 export type AgentRunStatusResponse = {
   runId: string;
-  status: RunStatus;
-  conversationId?: string;
-  requestId?: string;
-  workspace?: string;
+  status: string;
+  currentNode?: string;
   checkpointVersion?: number;
-  step?: number;
-  stopReason?: StopReason;
-  message?: string;
-  updatedAt?: string;
-  /**
-   * When true, the run can be resumed from its current checkpoint via
-   * `POST /agent/code/runs/{runId}/resume` (or the approval resume stream).
-   */
+  terminal?: boolean;
   resumable?: boolean;
-  /**
-   * Best-effort token usage snapshot returned alongside the status. The UI
-   * uses it to update the badge when a run is reconciled in the background.
-   */
-  usage?: AgentUsageSummary;
+  updatedAt?: string;
 };
 
 // ---- Trace / Replay types ----

@@ -33,6 +33,7 @@ import type {
   AgentRunStatusResponse,
   AgentStreamEvent,
   AgentTool,
+  AgentUndoExecuteResponse,
   AgentUndoResponse,
   AgentUsageSummary,
   AgentWorkspaceTreeNode,
@@ -158,7 +159,7 @@ export type LocalFolderTarget = {
 export type UndoViewState = {
   loading: boolean;
   executing: boolean;
-  response?: AgentUndoResponse;
+  response?: AgentUndoResponse | AgentUndoExecuteResponse;
   errorCode?: string;
   error?: string;
 };
@@ -233,7 +234,7 @@ function isActiveStatus(status?: RunStatus) {
  * `FAILED` / `BUDGET_EXCEEDED` / `CANCELLED` are surfaced as their own
  * labels so the user gets actionable information.
  */
-function mapBackendStatus(status: RunStatus): RunStatus {
+function mapBackendStatus(status: string): RunStatus {
   switch (status) {
     case "RUNNING":
     case "CONNECTING":
@@ -302,9 +303,9 @@ function writeRunStatusCache(cache: Record<string, CachedRunStatus>) {
 function cacheRunStatus(runId: string, payload: AgentRunStatusResponse | { status: RunStatus; message?: string }) {
   const cache = readRunStatusCache();
   cache[runId] = {
-    status: payload.status,
+    status: payload.status as RunStatus,
     updatedAt: "updatedAt" in payload ? payload.updatedAt : new Date().toISOString(),
-    message: payload.message
+    message: "message" in payload ? payload.message : undefined
   };
   writeRunStatusCache(cache);
 }
@@ -319,25 +320,14 @@ function applyRunStatusToSession(
     ...session,
     status: nextStatus,
     runId: payload.runId || session.runId,
-    requestId: payload.requestId || session.requestId,
-    conversationId: payload.conversationId || session.conversationId,
-    workspace: payload.workspace || session.workspace,
     error:
       nextStatus === "FAILED" || nextStatus === "BUDGET_EXCEEDED"
-        ? payload.message || session.error
+        ? session.error
         : session.error,
     recoverable:
       nextStatus === "FAILED" || nextStatus === "BUDGET_EXCEEDED"
         ? Boolean(payload.resumable)
-        : session.recoverable,
-    ...(options.isActiveSession && nextStatus === "COMPLETED" && payload.usage
-      ? {
-          usageByRunId: {
-            ...(session.usageByRunId || {}),
-            [payload.runId]: payload.usage
-          }
-        }
-      : {})
+        : session.recoverable
   };
 }
 
@@ -673,7 +663,7 @@ function traceDetail(event: AgentStreamEvent) {
   if (event.type === "node_start") return event.nodeInputs?.join(", ");
   if (event.type === "checkpoint_saved") return event.checkpointVersion ? `checkpoint v${event.checkpointVersion}` : "checkpoint saved";
   if (event.type === "resume_started") return event.approvalId ? `approval ${event.approvalId}` : "resume started";
-  if (event.type.startsWith("sub_agent")) return event.subAgentSummary || event.subAgentRole || event.subAgentId;
+  if (event.type.startsWith("sub_agent")) return event.subAgentRole || event.subAgentRunId;
   if (event.type === "plan_updated") return event.plan?.summary || `${event.plan?.items.length ?? 0} items`;
   if (event.type === "replan_started") return event.plan?.summary || "replanning";
   if (event.type === "done") return event.stopReason;
@@ -779,7 +769,7 @@ function pollUndoUntilReady(runId: string) {
 
   poll.timer = setTimeout(() => {
     const current = useAgentStore.getState().undoByRunId[runId];
-    if (current?.response?.status !== "OPEN" && current?.response?.status !== "SUSPENDED") {
+    if (current?.response && "status" in current.response && current.response.status !== "OPEN" && current.response.status !== "SUSPENDED") {
       resetUndoPolling(runId);
       return;
     }
@@ -1598,7 +1588,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             id: crypto.randomUUID(),
             label: event.type === "skill_activated"
               ? `skill · ${event.metadata?.name || "unknown"}`
-              : (event.node || event.subAgentName || event.type),
+              : (event.node || event.subAgentRole || event.type),
             detail: event.type === "skill_activated"
               ? `来源: ${event.metadata?.source || "unknown"}`
               : traceDetail(event),
@@ -2106,6 +2096,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   confirmUndo: async (runId) => {
     const current = get().undoByRunId[runId];
     if (!current?.response || current.executing) return;
+    if (!("snapshotVersion" in current.response)) return;
     const snapshotVersion = current.response.snapshotVersion;
     set((state) => ({
       undoByRunId: {
@@ -2300,13 +2291,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         const patch: Partial<AgentState> = {
           status: mapped,
           recoverable: active?.recoverable ?? false,
-          runId: payload.runId,
-          requestId: payload.requestId,
-          conversationId: payload.conversationId,
-          workspace: payload.workspace || state.workspace
+          runId: payload.runId
         };
         if (mapped === "FAILED" || mapped === "BUDGET_EXCEEDED") {
-          patch.error = payload.message || state.error;
+          // No message field in the new status response; keep existing error
         } else if (isTerminalStatus(mapped) || isPausedStatus(mapped)) {
           // clear recoverable flag when entering terminal or paused states
           patch.recoverable = false;

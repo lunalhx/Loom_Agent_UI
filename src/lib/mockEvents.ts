@@ -32,9 +32,9 @@ export const normalRun: AgentStreamEvent[] = [
     truncated: false
   },
   { type: "checkpoint_saved", runId: "mock-run-001", checkpointVersion: 1 },
-  { type: "sub_agent_started", runId: "mock-run-001", subAgentId: "reviewer-1", subAgentName: "UI reviewer", subAgentRole: "review" },
-  { type: "sub_agent_summary", runId: "mock-run-001", subAgentId: "reviewer-1", subAgentName: "UI reviewer", subAgentSummary: "Flow rows should stay collapsed by default." },
-  { type: "sub_agent_completed", runId: "mock-run-001", subAgentId: "reviewer-1", subAgentName: "UI reviewer", subAgentSummary: "No blockers found." },
+  { type: "sub_agent_started", runId: "mock-run-001", subAgentRunId: "reviewer-1", subAgentRole: "review" },
+  { type: "sub_agent_summary", runId: "mock-run-001", subAgentRunId: "reviewer-1", subAgentRole: "review" },
+  { type: "sub_agent_completed", runId: "mock-run-001", subAgentRunId: "reviewer-1", subAgentRole: "review" },
   { type: "thought", step: 2, thought: "读取主界面文件并定位需要更新的状态。" },
   { type: "tool_call", step: 2, tool: "read_file", input: { path: "src/App.tsx" }, workspace: "Loom_Agent_UI" },
   {

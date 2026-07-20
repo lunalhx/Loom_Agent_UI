@@ -5,6 +5,7 @@ import type {
   AgentRunStatusResponse,
   AgentRuntimeInfoResponse,
   AgentStreamEvent,
+  AgentUndoExecuteResponse,
   AgentUndoRequest,
   AgentUndoResponse,
   AgentUsageSummary,
@@ -289,13 +290,13 @@ export async function querySkills(workspace?: string): Promise<SkillSummary[]> {
   return parseApiResponse<SkillSummary[]>(response);
 }
 
-export async function undoRun(runId: string, request: AgentUndoRequest): Promise<AgentUndoResponse> {
+export async function undoRun(runId: string, request: AgentUndoRequest): Promise<AgentUndoExecuteResponse> {
   const response = await fetch(`${API_BASE}/agent/code/runs/${runId}/undo`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request)
   });
-  return parseApiResponse<AgentUndoResponse>(response);
+  return parseApiResponse<AgentUndoExecuteResponse>(response);
 }
 
 export async function cancelAgentRun(runId: string): Promise<boolean> {
